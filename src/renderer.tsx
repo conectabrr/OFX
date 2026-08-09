@@ -45,6 +45,8 @@ export const renderer = jsxRenderer(({ children }) => {
           rel="stylesheet"
         />
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        {/* SheetJS para leitura de arquivos Excel (.xlsx/.xls) */}
+        <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
         <link href="/static/style.css" rel="stylesheet" />
       </head>
       <body class="bg-slate-100 dark:bg-slate-950 min-h-screen transition-colors">{children}</body>
