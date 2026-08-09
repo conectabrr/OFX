@@ -113,6 +113,70 @@ app.get('/', (c) => {
             </div>
           </div>
 
+          {/* Percentage Calculator */}
+          <div class="bg-white rounded-xl shadow-md p-6 mb-6">
+            <h2 class="text-lg font-bold text-gray-800 mb-4">
+              <i class="fas fa-calculator text-blue-600 mr-2"></i>Calculadora de Porcentagem
+            </h2>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+              <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">
+                  Valor (R$)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  id="calc-value"
+                  placeholder="1000,00"
+                  class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">
+                  Operação
+                </label>
+                <select
+                  id="calc-op"
+                  class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="of">% de (X% do valor)</option>
+                  <option value="add">Acrescentar % (juros/aumento)</option>
+                  <option value="sub">Descontar % (desconto)</option>
+                  <option value="ratio">Qual % (A é % de B)</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">
+                  <span id="calc-second-label">Porcentagem (%)</span>
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  id="calc-percent"
+                  placeholder="10"
+                  class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">
+                  Resultado
+                </label>
+                <div
+                  id="calc-result"
+                  class="w-full border-2 border-blue-500 bg-blue-50 rounded-lg px-3 py-2 text-lg font-bold text-blue-700"
+                >
+                  R$ 0,00
+                </div>
+              </div>
+            </div>
+            <p class="text-xs text-gray-500 mt-3">
+              <i class="fas fa-info-circle mr-1"></i>
+              <span id="calc-hint">
+                Ex.: 10% de R$ 1.000,00 = R$ 100,00. Também pode calcular acréscimos, descontos ou qual porcentagem um valor representa de outro.
+              </span>
+            </p>
+          </div>
+
           {/* Chart */}
           <div class="bg-white rounded-xl shadow-md p-6 mb-6">
             <h2 class="text-lg font-bold text-gray-800 mb-4">
@@ -167,13 +231,22 @@ app.get('/', (c) => {
               <div>
                 <label class="block text-xs font-semibold text-gray-600 mb-1">
                   Buscar Descrição
+                  <span
+                    class="ml-1 text-blue-500 cursor-help"
+                    title='Busca combinada: separe palavras por espaço (todas devem existir). Use "frase entre aspas" para busca exata. Use -palavra para excluir.'
+                  >
+                    <i class="fas fa-question-circle"></i>
+                  </span>
                 </label>
                 <input
                   type="text"
                   id="filter-search"
-                  placeholder="Ex: PIX, TED, salário..."
+                  placeholder='Ex: pix maria  |  "netflix"  |  pix -reembolso'
                   class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
+                <p class="text-[10px] text-gray-500 mt-1">
+                  Múltiplas palavras: <code class="bg-gray-100 px-1">todas</code> devem existir · <code class="bg-gray-100 px-1">"aspas"</code> = frase exata · <code class="bg-gray-100 px-1">-palavra</code> = excluir
+                </p>
               </div>
               <div>
                 <label class="block text-xs font-semibold text-gray-600 mb-1">
@@ -183,10 +256,14 @@ app.get('/', (c) => {
                   type="text"
                   id="filter-counterparty"
                   list="counterparty-list"
-                  placeholder="Nome, agência ou conta..."
+                  placeholder="Digite ou selecione ao lado..."
+                  autocomplete="off"
                   class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
                 <datalist id="counterparty-list"></datalist>
+                <p class="text-[10px] text-gray-500 mt-1">
+                  Digite parte do nome, agência ou conta (aceita múltiplas palavras)
+                </p>
               </div>
               <div>
                 <label class="block text-xs font-semibold text-gray-600 mb-1">
@@ -242,6 +319,34 @@ app.get('/', (c) => {
                 </button>
               </div>
             </div>
+          </div>
+
+          {/* Counterparty Panel - Lista de destinos/origens */}
+          <div class="bg-white rounded-xl shadow-md p-6 mb-6">
+            <div class="flex items-center justify-between mb-3">
+              <h2 class="text-lg font-bold text-gray-800">
+                <i class="fas fa-address-book text-blue-600 mr-2"></i>
+                Contrapartes (destinos e origens)
+                <span
+                  id="counterparty-count"
+                  class="ml-2 text-sm font-normal text-gray-500"
+                ></span>
+              </h2>
+              <button
+                id="counterparty-toggle"
+                class="text-sm text-blue-600 hover:text-blue-800"
+              >
+                <i class="fas fa-chevron-up"></i>
+                <span class="ml-1">Recolher</span>
+              </button>
+            </div>
+            <p class="text-xs text-gray-500 mb-3">
+              Clique em uma contraparte para filtrar as transações. Clique novamente para remover o filtro.
+            </p>
+            <div
+              id="counterparty-panel"
+              class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-64 overflow-y-auto"
+            ></div>
           </div>
 
           {/* Transactions Table */}

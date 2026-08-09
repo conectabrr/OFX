@@ -29,10 +29,33 @@
 ### 🔍 Filtros Personalizados
 - **Por tipo**: Todas / Somente Créditos / Somente Débitos
 - **Por período**: Data e **hora** inicial/final (precisão de minuto)
-- **Por descrição**: Busca textual (PIX, TED, salário, etc.)
-- **Por conta destino/origem**: Busca pelo nome, banco, agência ou número da conta contraparte (com autocomplete)
+- **Por descrição — busca avançada combinada**:
+  - Múltiplas palavras separadas por espaço → **todas** devem existir (AND)
+  - `"frase entre aspas"` → busca a frase exata
+  - `-palavra` → exclui resultados com essa palavra
+  - Ignora acentuação e caixa
+  - Ex.: `pix maria` · `"netflix assinatura"` · `pagamento -pix`
+- **Por conta destino/origem**: Busca combinada por nome, banco, agência ou número da conta.
+  Também pode ser selecionada clicando na lista/painel de contrapartes (com totais de crédito/débito por contraparte).
 - **Por valor**: Valor mínimo e máximo
 - **Ordenação**: Data (crescente/decrescente), Valor (crescente/decrescente), Descrição (A-Z)
+
+### 🧮 Calculadora de Porcentagem
+Aparece acima da Evolução Diária. Suporta 4 operações:
+- **% de**: X% de um valor (ex.: 10% de R$ 1.000,00 = R$ 100,00)
+- **Acrescentar %**: valor + juros/aumento (ex.: R$ 1.000,00 + 10% = R$ 1.100,00)
+- **Descontar %**: valor - desconto (ex.: R$ 1.000,00 - 10% = R$ 900,00)
+- **Qual %**: quanto A representa de B (ex.: R$ 200,00 é 20% de R$ 1.000,00)
+
+### 🌐 Detecção Automática de Encoding
+O leitor detecta automaticamente o encoding declarado no cabeçalho OFX:
+- **UTF-8** (Nubank, fintechs modernas)
+- **windows-1252 / cp1252** (Itaú, Bradesco, Banco do Brasil, Santander)
+- **ISO-8859-1 / Latin1** (bancos com padrão Unix)
+- Detecção pelas linhas `ENCODING:` e `CHARSET:` (OFX 1.x) ou pelo `<?xml encoding="..."?>` (OFX 2.x)
+- Fallback heurístico caso o cabeçalho esteja ausente
+
+Isso resolve o problema de textos aparecerem corrompidos (ex.: "DÃ‰BITO" em vez de "DÉBITO").
 
 ### 📄 Paginação
 - Seleção de 100, 500 ou 1000 transações por página

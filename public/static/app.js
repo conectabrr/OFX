@@ -10,7 +10,91 @@ const state = {
   chart: null,
   currentPage: 1,
   pageSize: 100,
+  counterpartyList: [],
 };
+
+// ============================================================
+// CALCULADORA DE PORCENTAGEM
+// ============================================================
+document.addEventListener('DOMContentLoaded', () => {
+  const calcValue = document.getElementById('calc-value');
+  const calcOp = document.getElementById('calc-op');
+  const calcPercent = document.getElementById('calc-percent');
+  const calcResult = document.getElementById('calc-result');
+  const calcSecondLabel = document.getElementById('calc-second-label');
+  const calcHint = document.getElementById('calc-hint');
+  if (!calcValue) return;
+
+  const hints = {
+    of: 'Ex.: 10% de R$ 1.000,00 = R$ 100,00',
+    add: 'Ex.: R$ 1.000,00 + 10% de acréscimo = R$ 1.100,00',
+    sub: 'Ex.: R$ 1.000,00 - 10% de desconto = R$ 900,00',
+    ratio: 'Ex.: R$ 200,00 representa 20% de R$ 1.000,00',
+  };
+
+  const labels = {
+    of: 'Porcentagem (%)',
+    add: 'Porcentagem (%)',
+    sub: 'Porcentagem (%)',
+    ratio: 'É % de qual valor (R$)',
+  };
+
+  function calc() {
+    const v = parseFloat(calcValue.value);
+    const p = parseFloat(calcPercent.value);
+    const op = calcOp.value;
+
+    calcSecondLabel.textContent = labels[op];
+    calcHint.textContent = hints[op];
+
+    if (isNaN(v) || isNaN(p)) {
+      calcResult.textContent = op === 'ratio' ? '0,00%' : formatCurrency(0);
+      return;
+    }
+
+    let result, display;
+    switch (op) {
+      case 'of':
+        result = (v * p) / 100;
+        display = formatCurrency(result);
+        break;
+      case 'add':
+        result = v * (1 + p / 100);
+        display = formatCurrency(result);
+        break;
+      case 'sub':
+        result = v * (1 - p / 100);
+        display = formatCurrency(result);
+        break;
+      case 'ratio':
+        if (p === 0) {
+          display = '—';
+        } else {
+          result = (v / p) * 100;
+          display = result.toFixed(2).replace('.', ',') + '%';
+        }
+        break;
+    }
+    calcResult.textContent = display;
+  }
+
+  [calcValue, calcOp, calcPercent].forEach((el) => {
+    el.addEventListener('input', calc);
+    el.addEventListener('change', calc);
+  });
+
+  // Toggle do painel de contrapartes
+  const cpToggle = document.getElementById('counterparty-toggle');
+  const cpPanel = document.getElementById('counterparty-panel');
+  if (cpToggle && cpPanel) {
+    cpToggle.addEventListener('click', () => {
+      const isHidden = cpPanel.classList.toggle('hidden');
+      cpToggle.innerHTML = isHidden
+        ? '<i class="fas fa-chevron-down"></i><span class="ml-1">Expandir</span>'
+        : '<i class="fas fa-chevron-up"></i><span class="ml-1">Recolher</span>';
+    });
+  }
+});
 
 // ============================================================
 // PARSER OFX
@@ -360,10 +444,15 @@ function handleFile(file) {
     return;
   }
 
+  // Lemos primeiro como ArrayBuffer para detectar o encoding correto
+  // (o OFX declara ENCODING e CHARSET no cabeçalho)
   const reader = new FileReader();
   reader.onload = (e) => {
     try {
-      const content = e.target.result;
+      const buffer = e.target.result;
+      const encoding = detectOFXEncoding(buffer);
+      const decoder = new TextDecoder(encoding, { fatal: false });
+      const content = decoder.decode(buffer);
       const { accountInfo, transactions } = parseOFX(content);
       state.accountInfo = accountInfo;
       state.transactions = transactions;
@@ -377,8 +466,90 @@ function handleFile(file) {
     }
   };
   reader.onerror = () => showError('Não foi possível ler o arquivo.');
-  // Bancos brasileiros costumam usar ISO-8859-1 (Latin1) - tentamos primeiro UTF-8
-  reader.readAsText(file, 'ISO-8859-1');
+  reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Detecta o encoding correto lendo o cabeçalho OFX.
+ *
+ * O padrão OFX 1.x declara duas linhas no cabeçalho:
+ *   ENCODING:USASCII | UTF-8 | ...
+ *   CHARSET:1252 | 1250 | 8859-1 | ...
+ *
+ * Bancos brasileiros costumam usar:
+ *   - windows-1252 (Itaú, Bradesco, BB) — quando CHARSET=1252
+ *   - UTF-8 (Nubank, alguns fintechs)   — quando ENCODING=UTF-8
+ *   - ISO-8859-1 (Latin1, alguns)       — quando CHARSET=8859-1
+ */
+function detectOFXEncoding(buffer) {
+  // Lê os primeiros 500 bytes como ASCII para inspecionar o cabeçalho
+  const bytes = new Uint8Array(buffer, 0, Math.min(500, buffer.byteLength));
+  let header = '';
+  for (let i = 0; i < bytes.length; i++) {
+    header += String.fromCharCode(bytes[i]);
+  }
+  header = header.toUpperCase();
+
+  // OFX 2.x (XML) declara encoding no <?xml version=... encoding="..."?>
+  const xmlMatch = header.match(/<\?XML[^>]*ENCODING\s*=\s*['"]([^'"]+)['"]/i);
+  if (xmlMatch) {
+    return normalizeEncoding(xmlMatch[1]);
+  }
+
+  // OFX 1.x usa linhas ENCODING: e CHARSET:
+  const encLine = header.match(/ENCODING:\s*([A-Z0-9-]+)/);
+  const chsLine = header.match(/CHARSET:\s*([A-Z0-9-]+)/);
+  const enc = encLine ? encLine[1] : '';
+  const chs = chsLine ? chsLine[1] : '';
+
+  if (enc === 'UTF-8' || enc === 'UTF8') return 'utf-8';
+  if (chs === '1252') return 'windows-1252';
+  if (chs === '1250') return 'windows-1250';
+  if (chs === '8859-1' || chs === 'LATIN1') return 'iso-8859-1';
+  if (enc === 'USASCII') {
+    // USASCII geralmente vem junto com CHARSET=1252 no Brasil; padrão seguro
+    return chs === '1252' ? 'windows-1252' : 'windows-1252';
+  }
+
+  // Padrão: tenta UTF-8 primeiro (se conteúdo parecer UTF-8 válido, mantém),
+  // senão cai para windows-1252 que é o mais comum no Brasil
+  if (looksLikeUtf8(buffer)) return 'utf-8';
+  return 'windows-1252';
+}
+
+function normalizeEncoding(enc) {
+  const e = enc.toLowerCase().replace(/[_\s]/g, '-');
+  if (e === 'utf8') return 'utf-8';
+  if (e === 'latin1') return 'iso-8859-1';
+  if (e === 'cp1252') return 'windows-1252';
+  return e;
+}
+
+/** Heurística: verifica se o buffer parece UTF-8 válido */
+function looksLikeUtf8(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const sampleSize = Math.min(bytes.length, 8192);
+  let i = 0;
+  while (i < sampleSize) {
+    const b = bytes[i];
+    if (b < 0x80) {
+      i++;
+      continue;
+    }
+    // Sequência multi-byte UTF-8
+    let extra;
+    if ((b & 0xe0) === 0xc0) extra = 1;
+    else if ((b & 0xf0) === 0xe0) extra = 2;
+    else if ((b & 0xf8) === 0xf0) extra = 3;
+    else return false;
+
+    if (i + extra >= sampleSize) return true; // sem certeza mas provável
+    for (let j = 1; j <= extra; j++) {
+      if ((bytes[i + j] & 0xc0) !== 0x80) return false;
+    }
+    i += extra + 1;
+  }
+  return true;
 }
 
 // ============================================================
@@ -511,18 +682,129 @@ function setupFilters() {
   exportBtn.addEventListener('click', exportCSV);
 }
 
-/** Popula o datalist do autocomplete de contraparte com valores únicos */
+/**
+ * Popula o datalist do autocomplete de contraparte com valores únicos.
+ * Prioriza nomes de pessoas/empresas. Também guarda o mapa completo
+ * para o dropdown lateral.
+ */
 function populateCounterpartyList() {
-  const set = new Set();
+  const nameCount = new Map(); // nome → { count, totalCredit, totalDebit }
   state.transactions.forEach((t) => {
-    if (t.counterpartyName) set.add(t.counterpartyName);
-    if (t.counterpartyAccount) set.add(t.counterpartyAccount);
-    if (t.counterparty) set.add(t.counterparty);
+    const key = t.counterpartyName || t.counterparty;
+    if (!key) return;
+    if (!nameCount.has(key)) {
+      nameCount.set(key, { count: 0, totalCredit: 0, totalDebit: 0 });
+    }
+    const entry = nameCount.get(key);
+    entry.count++;
+    if (t.type === 'credit') entry.totalCredit += t.amount;
+    else entry.totalDebit += t.absAmount;
   });
-  counterpartyList.innerHTML = [...set]
-    .sort()
-    .map((v) => `<option value="${escapeHtml(v)}"></option>`)
+  // Ordena por número de transações (mais frequentes primeiro)
+  const sorted = [...nameCount.entries()].sort((a, b) => b[1].count - a[1].count);
+
+  // Datalist para autocomplete (input)
+  counterpartyList.innerHTML = sorted
+    .map(([name, data]) => {
+      const info = `${data.count} transação(ões)`;
+      return `<option value="${escapeHtml(name)}" label="${escapeHtml(info)}"></option>`;
+    })
     .join('');
+
+  // Preenche o dropdown/lista lateral
+  state.counterpartyList = sorted;
+  renderCounterpartyPanel();
+}
+
+/** Renderiza a lista lateral com todos os destinos/origens */
+function renderCounterpartyPanel() {
+  const panel = document.getElementById('counterparty-panel');
+  const countLabel = document.getElementById('counterparty-count');
+  if (!panel) return;
+  if (!state.counterpartyList || state.counterpartyList.length === 0) {
+    panel.innerHTML =
+      '<p class="text-xs text-gray-400 italic p-2 col-span-full">Nenhuma contraparte identificada no arquivo.</p>';
+    if (countLabel) countLabel.textContent = '';
+    return;
+  }
+  if (countLabel) countLabel.textContent = `(${state.counterpartyList.length})`;
+  const currentFilter = filterCounterparty.value.trim().toLowerCase();
+  panel.innerHTML = state.counterpartyList
+    .map(([name, data]) => {
+      const isActive = currentFilter && name.toLowerCase() === currentFilter;
+      const activeClass = isActive
+        ? 'bg-blue-100 border-blue-400 text-blue-800'
+        : 'bg-white hover:bg-gray-50 border-gray-200 text-gray-700';
+      const flows = [];
+      if (data.totalCredit > 0)
+        flows.push(
+          `<span class="text-green-600"><i class="fas fa-arrow-up"></i> ${formatCurrency(
+            data.totalCredit
+          )}</span>`
+        );
+      if (data.totalDebit > 0)
+        flows.push(
+          `<span class="text-red-600"><i class="fas fa-arrow-down"></i> ${formatCurrency(
+            data.totalDebit
+          )}</span>`
+        );
+      return `
+        <button type="button" data-cp="${escapeHtml(name)}"
+          class="counterparty-item text-left w-full border ${activeClass} rounded-lg px-3 py-2 text-xs transition">
+          <div class="font-semibold truncate">${escapeHtml(name)}</div>
+          <div class="flex items-center justify-between mt-1">
+            <span class="text-gray-500">${data.count} trans.</span>
+            <div class="flex gap-2 text-[11px]">${flows.join('')}</div>
+          </div>
+        </button>`;
+    })
+    .join('');
+
+  // Attach click handlers
+  panel.querySelectorAll('.counterparty-item').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const name = btn.getAttribute('data-cp');
+      // Toggle: se já está selecionado, limpa
+      if (filterCounterparty.value.trim() === name) {
+        filterCounterparty.value = '';
+      } else {
+        filterCounterparty.value = name;
+      }
+      state.currentPage = 1;
+      applyFilters();
+    });
+  });
+}
+
+/**
+ * Parseia a string de busca em tokens.
+ * Regras:
+ *  - "frase entre aspas" → busca exata pela frase
+ *  - -palavra            → exclui resultados com essa palavra
+ *  - palavra palavra     → todas devem estar presentes (AND)
+ */
+function parseSearchQuery(query) {
+  const tokens = [];
+  const regex = /"([^"]+)"|(\S+)/g;
+  let m;
+  while ((m = regex.exec(query)) !== null) {
+    let value = m[1] || m[2];
+    let exclude = false;
+    if (!m[1] && value.startsWith('-') && value.length > 1) {
+      exclude = true;
+      value = value.substring(1);
+    }
+    if (value) tokens.push({ value, exclude });
+  }
+  return tokens;
+}
+
+/** Normaliza texto para busca: minúsculo + sem acento */
+function normalizeText(text) {
+  return String(text)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 }
 
 function totalPages() {
@@ -559,28 +841,42 @@ function applyFilters() {
     }
   }
 
-  // Filtro por descrição (case-insensitive)
-  const searchTerm = filterSearch.value.trim().toLowerCase();
-  if (searchTerm) {
-    result = result.filter(
-      (t) =>
-        t.description.toLowerCase().includes(searchTerm) ||
-        (t.memo && t.memo.toLowerCase().includes(searchTerm)) ||
-        (t.name && t.name.toLowerCase().includes(searchTerm))
-    );
+  // Filtro por descrição - BUSCA AVANÇADA COMBINADA
+  // Suporta múltiplas palavras (todas devem existir, em qualquer ordem)
+  // Suporta "-palavra" para excluir e "frase entre aspas" para busca exata
+  // Ex.: pix joão            → contém "pix" E "joão"
+  // Ex.: pix -reembolso      → contém "pix" mas NÃO "reembolso"
+  // Ex.: "netflix assinatura" → contém a frase exata
+  const searchRaw = filterSearch.value.trim();
+  if (searchRaw) {
+    const tokens = parseSearchQuery(searchRaw);
+    result = result.filter((t) => {
+      const haystack = normalizeText(
+        `${t.description || ''} ${t.memo || ''} ${t.name || ''} ${t.trnType || ''}`
+      );
+      return tokens.every((tok) => {
+        const needle = normalizeText(tok.value);
+        const found = haystack.includes(needle);
+        return tok.exclude ? !found : found;
+      });
+    });
   }
 
-  // Filtro por conta destino/origem (contraparte)
-  const cpTerm = filterCounterparty.value.trim().toLowerCase();
-  if (cpTerm) {
+  // Filtro por conta destino/origem (contraparte) - também com busca combinada
+  const cpRaw = filterCounterparty.value.trim();
+  if (cpRaw) {
+    const tokens = parseSearchQuery(cpRaw);
     result = result.filter((t) => {
-      return (
-        (t.counterparty && t.counterparty.toLowerCase().includes(cpTerm)) ||
-        (t.counterpartyName && t.counterpartyName.toLowerCase().includes(cpTerm)) ||
-        (t.counterpartyAccount && t.counterpartyAccount.toLowerCase().includes(cpTerm)) ||
-        (t.counterpartyBank && t.counterpartyBank.toLowerCase().includes(cpTerm)) ||
-        (t.counterpartyBranch && t.counterpartyBranch.toLowerCase().includes(cpTerm))
+      const haystack = normalizeText(
+        `${t.counterparty || ''} ${t.counterpartyName || ''} ${
+          t.counterpartyAccount || ''
+        } ${t.counterpartyBank || ''} ${t.counterpartyBranch || ''}`
       );
+      return tokens.every((tok) => {
+        const needle = normalizeText(tok.value);
+        const found = haystack.includes(needle);
+        return tok.exclude ? !found : found;
+      });
     });
   }
 
@@ -613,6 +909,7 @@ function applyFilters() {
   renderTable();
   renderStats();
   renderChart();
+  renderCounterpartyPanel(); // atualiza destaque da lista lateral
 }
 
 // ============================================================
