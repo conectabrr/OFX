@@ -13,6 +13,16 @@ const state = {
   counterpartyList: [],
   selectedIds: new Set(),   // FITIDs selecionados (checkboxes)
   reversalOnlyMode: false,  // Botão exclusivo: mostra apenas transações de estorno
+  sourceFormat: 'OFX',      // Formato do arquivo importado (OFX / PDF)
+};
+
+// Estado temporário do parser PDF (usado pelo modal de preview)
+const pdfState = {
+  transactions: [],  // transações extraídas do PDF
+  accountInfo: {},   // info do banco/conta detectada
+  fileName: '',
+  totalPages: 0,
+  removedRows: new Set(),  // índices marcados como incorretos pelo usuário
 };
 
 // ============================================================
@@ -628,12 +638,20 @@ function hideError() {
 function handleFile(file) {
   hideError();
   const ext = file.name.toLowerCase().split('.').pop();
-  if (ext !== 'ofx') {
-    showError('Por favor selecione um arquivo com extensão .ofx');
+  const isOFX = ext === 'ofx';
+  const isPDF = ext === 'pdf';
+
+  if (!isOFX && !isPDF) {
+    showError('Formato não suportado. Use .ofx ou .pdf');
     return;
   }
 
-  // Lemos primeiro como ArrayBuffer para detectar o encoding correto
+  if (isPDF) {
+    handlePDFFile(file);
+    return;
+  }
+
+  // OFX: lemos primeiro como ArrayBuffer para detectar o encoding correto
   // (o OFX declara ENCODING e CHARSET no cabeçalho)
   const reader = new FileReader();
   reader.onload = (e) => {
@@ -643,15 +661,7 @@ function handleFile(file) {
       const decoder = new TextDecoder(encoding, { fatal: false });
       const content = decoder.decode(buffer);
       const { accountInfo, transactions } = parseOFX(content);
-      state.accountInfo = accountInfo;
-      state.transactions = transactions;
-      state.filtered = [...transactions];
-      renderDashboard();
-      uploadSection.classList.add('hidden');
-      dashboard.classList.remove('hidden');
-      // Mostra botão de "Novo arquivo" no header
-      resetBtn.classList.remove('hidden');
-      resetBtn.classList.add('inline-flex');
+      finalizeImport(accountInfo, transactions, 'OFX');
     } catch (err) {
       console.error(err);
       showError('Erro ao processar arquivo: ' + err.message);
@@ -659,6 +669,618 @@ function handleFile(file) {
   };
   reader.onerror = () => showError('Não foi possível ler o arquivo.');
   reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Finaliza a importação (OFX ou PDF confirmado): atualiza estado e mostra dashboard.
+ */
+function finalizeImport(accountInfo, transactions, sourceFormat) {
+  if (!transactions || transactions.length === 0) {
+    showError('Nenhuma transação foi encontrada no arquivo.');
+    return;
+  }
+  state.accountInfo = accountInfo;
+  state.transactions = transactions;
+  state.filtered = [...transactions];
+  state.sourceFormat = sourceFormat || 'OFX';
+  renderDashboard();
+  uploadSection.classList.add('hidden');
+  dashboard.classList.remove('hidden');
+  resetBtn.classList.remove('hidden');
+  resetBtn.classList.add('inline-flex');
+}
+
+/* ============================================================================
+   PDF PARSER — pdf.js (window.pdfjsLib)
+   ============================================================================
+   PDF não é formato estruturado — é texto posicionado em coordenadas X/Y.
+   Estratégia:
+   1. Extrair todos os "text items" com posições de cada página via pdf.js
+   2. Agrupar itens por linha (mesma coordenada Y ±3px)
+   3. Ordenar cada linha por X (esquerda → direita)
+   4. Tentar identificar linhas de transação usando padrões brasileiros:
+      - Data no início: dd/mm/yyyy ou dd/mm
+      - Valor no final: R$ 1.234,56 ou 1.234,56 D/C
+      - Descrição no meio
+   5. Extrair info da conta do cabeçalho (banco, agência, período)
+   ============================================================================ */
+
+async function handlePDFFile(file) {
+  if (typeof pdfjsLib === 'undefined') {
+    showError('Biblioteca de leitura PDF não carregou. Recarregue a página.');
+    return;
+  }
+
+  const loading = document.getElementById('pdf-loading');
+  const loadingText = document.getElementById('pdf-loading-text');
+  if (loading) loading.classList.remove('hidden');
+  if (loadingText) loadingText.textContent = 'Lendo arquivo PDF...';
+
+  try {
+    const buffer = await file.arrayBuffer();
+    if (loadingText) loadingText.textContent = 'Analisando páginas do PDF...';
+
+    const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+    const totalPages = pdf.numPages;
+    pdfState.totalPages = totalPages;
+    pdfState.fileName = file.name;
+
+    // Extrai todas as linhas de texto de todas as páginas
+    const allLines = [];
+    let totalChars = 0;
+    for (let p = 1; p <= totalPages; p++) {
+      if (loadingText) loadingText.textContent = `Extraindo texto da página ${p}/${totalPages}...`;
+      const page = await pdf.getPage(p);
+      const textContent = await page.getTextContent();
+      const items = textContent.items;
+      totalChars += items.reduce((n, it) => n + (it.str || '').length, 0);
+      const lines = groupPDFTextByLines(items);
+      for (const line of lines) {
+        line.page = p;
+        allLines.push(line);
+      }
+    }
+
+    // Verifica se é PDF escaneado (pouco texto extraído)
+    if (totalChars < 100) {
+      if (loading) loading.classList.add('hidden');
+      showError('Este PDF parece ser escaneado (imagem). Não é possível extrair texto. Por favor use o arquivo OFX do seu internet banking.');
+      return;
+    }
+
+    // Detecta banco e informações da conta
+    const bankInfo = detectBankFromPDFLines(allLines);
+    if (loadingText) loadingText.textContent = 'Identificando transações...';
+
+    // Extrai transações
+    const transactions = extractTransactionsFromPDFLines(allLines);
+
+    if (transactions.length === 0) {
+      if (loading) loading.classList.add('hidden');
+      showError('Não foi possível identificar transações neste PDF. O layout pode não ser suportado. Prefira o arquivo OFX do seu internet banking.');
+      return;
+    }
+
+    // Constrói accountInfo
+    const dates = transactions.map(t => t.date).filter(d => d instanceof Date && !isNaN(d));
+    const startDate = dates.length ? new Date(Math.min(...dates.map(d => d.getTime()))) : null;
+    const endDate = dates.length ? new Date(Math.max(...dates.map(d => d.getTime()))) : null;
+    const balance = transactions.reduce((acc, t) => acc + t.amount, 0);
+
+    const accountInfo = {
+      bankId: bankInfo.bankId || '',
+      branchId: bankInfo.branchId || '',
+      accountId: bankInfo.accountId || '',
+      accountType: 'CHECKING',
+      currency: 'BRL',
+      startDate: startDate,
+      endDate: endDate,
+      balance: bankInfo.balance !== null ? bankInfo.balance : balance,
+      balanceDate: endDate,
+      bankName: bankInfo.bankName || '',
+      source: 'PDF: ' + file.name,
+    };
+
+    pdfState.transactions = transactions;
+    pdfState.accountInfo = accountInfo;
+    pdfState.removedRows = new Set();
+
+    if (loading) loading.classList.add('hidden');
+
+    // Abre modal de preview para o usuário confirmar
+    openPDFPreviewModal(bankInfo, totalPages, transactions);
+  } catch (err) {
+    if (loading) loading.classList.add('hidden');
+    console.error('Erro ao processar PDF:', err);
+    showError('Erro ao processar PDF: ' + err.message);
+  }
+}
+
+/**
+ * Agrupa itens de texto do pdf.js em linhas com base na coordenada Y.
+ * pdf.js retorna cada string com um transform [scaleX, skewX, skewY, scaleY, x, y]
+ * onde y é a coordenada vertical (invertida: maior Y = topo da página).
+ */
+function groupPDFTextByLines(items) {
+  const lines = [];
+  const TOLERANCE = 3; // pixels de tolerância para considerar mesma linha
+
+  for (const item of items) {
+    if (!item.str || !item.str.trim()) continue;
+    const y = item.transform[5];
+    const x = item.transform[4];
+    // Procura uma linha existente com Y próximo
+    let line = lines.find(l => Math.abs(l.y - y) <= TOLERANCE);
+    if (!line) {
+      line = { y: y, items: [] };
+      lines.push(line);
+    }
+    line.items.push({ x: x, str: item.str, width: item.width || 0 });
+  }
+
+  // Ordena linhas de cima pra baixo (maior Y primeiro), itens da esquerda pra direita
+  lines.sort((a, b) => b.y - a.y);
+  for (const line of lines) {
+    line.items.sort((a, b) => a.x - b.x);
+    // Junta os itens da linha em uma string com espaços preservados
+    line.text = line.items.map(it => it.str).join(' ').replace(/\s+/g, ' ').trim();
+    // Também preserva os itens individuais para análise de colunas
+  }
+
+  return lines;
+}
+
+/**
+ * Tenta detectar qual banco emitiu o PDF, e extrair info da conta.
+ * Retorna { bankName, bankId, branchId, accountId, balance }
+ */
+function detectBankFromPDFLines(lines) {
+  const info = {
+    bankName: '', bankId: '', branchId: '', accountId: '', balance: null,
+  };
+
+  // Junta as primeiras 30 linhas para procurar cabeçalho
+  const headerText = lines.slice(0, 30).map(l => l.text).join('\n').toUpperCase();
+
+  // Detecção de banco por keywords
+  const bankPatterns = [
+    { name: 'Nubank', id: '260', re: /NUBANK|NU\s+PAGAMENTOS|260\s*-?\s*NU/ },
+    { name: 'Itaú', id: '341', re: /ITA[ÚU]|BANCO\s+ITAU|341\s*-?\s*ITA/ },
+    { name: 'Bradesco', id: '237', re: /BRADESCO|237\s*-?\s*BRA/ },
+    { name: 'Banco do Brasil', id: '001', re: /BANCO\s+DO\s+BRASIL|001\s*-?\s*BB|\bBB\b/ },
+    { name: 'Caixa', id: '104', re: /CAIXA\s+ECONOMICA|CAIXA\s+ECON[ÔO]MICA|104\s*-?\s*CEF/ },
+    { name: 'Santander', id: '033', re: /SANTANDER|033\s*-?\s*SAN/ },
+    { name: 'Inter', id: '077', re: /BANCO\s+INTER|077\s*-?\s*INTER/ },
+    { name: 'C6 Bank', id: '336', re: /C6\s+BANK|336\s*-?\s*C6/ },
+    { name: 'BTG Pactual', id: '208', re: /BTG\s+PACTUAL|208\s*-?\s*BTG/ },
+    { name: 'PicPay', id: '380', re: /PICPAY|380\s*-?\s*PIC/ },
+    { name: 'Sicoob', id: '756', re: /SICOOB|756/ },
+    { name: 'Sicredi', id: '748', re: /SICREDI|748/ },
+    { name: 'Original', id: '212', re: /BANCO\s+ORIGINAL|212/ },
+    { name: 'Mercado Pago', id: '323', re: /MERCADO\s+PAGO|323/ },
+    { name: 'Next', id: '237', re: /BANCO\s+NEXT|\bNEXT\b/ },
+  ];
+
+  for (const p of bankPatterns) {
+    if (p.re.test(headerText)) {
+      info.bankName = p.name;
+      info.bankId = p.id;
+      break;
+    }
+  }
+
+  // Fallback: se não identificou banco conhecido, tenta extrair nome genérico
+  //   "BANCO XYZ S.A. - 260"  ou  "BANCO XYZ S/A"  ou  "COOPERATIVA DE CRÉDITO ..."
+  if (!info.bankName) {
+    // Procura nas 10 primeiras linhas (não juntas — preservando quebras)
+    for (const line of lines.slice(0, 10)) {
+      const t = line.text || '';
+      // Padrão: "BANCO <NOME> S.A. - <CÓDIGO>"  ou  "BANCO <NOME> S/A"
+      let bm = t.match(/^(BANCO\s+[A-Z][A-ZÀ-Ú0-9\s&]{2,40}?)(?:\s+S[\.\/]?\s*A\.?)?(?:\s*[-–]\s*(\d{3}))?\s*$/i);
+      if (bm) {
+        info.bankName = bm[1].replace(/\s+/g, ' ').trim();
+        if (bm[2]) info.bankId = bm[2];
+        break;
+      }
+      // Padrão: só o código no final "... - 260" ou "... 260"
+      bm = t.match(/^([A-Z][A-ZÀ-Ú][A-ZÀ-Ú0-9\s&]{3,40}?)\s+[-–]\s+(\d{3})\s*$/i);
+      if (bm && /BANCO|COOPERATIVA|CAIXA|FINANCEIRA/i.test(bm[1])) {
+        info.bankName = bm[1].replace(/\s+/g, ' ').trim();
+        info.bankId = bm[2];
+        break;
+      }
+    }
+  }
+
+  // Agência: padrões "Agência: 1234", "Ag. 1234", "Ag 1234-5"
+  const agMatch = headerText.match(/AG[ÊE]NCIA\s*:?\s*(\d{3,5})|AG\.?\s+(\d{3,5})/);
+  if (agMatch) info.branchId = agMatch[1] || agMatch[2] || '';
+
+  // Conta: "Conta: 12345-6", "C/C 12345-6", "Cta 12345-6"
+  const ccMatch = headerText.match(/(?:CONTA|C\/C|CTA|CC)\s*:?\s*(\d{4,10}[-]?\d{0,2})/);
+  if (ccMatch) info.accountId = ccMatch[1];
+
+  // Saldo final: procura "Saldo final: R$ 1.234,56" ou "Saldo em <data>: R$ X"
+  const saldoMatch = headerText.match(/SALDO\s+(?:FINAL|ATUAL|EM\s+\d{2}\/\d{2}\/\d{2,4})\s*:?\s*R?\$?\s*(-?[\d.,]+)/i);
+  if (saldoMatch) {
+    const val = parseBRNumber(saldoMatch[1]);
+    if (val !== null && !isNaN(val)) info.balance = val;
+  }
+
+  return info;
+}
+
+/**
+ * Extrai transações das linhas de texto do PDF.
+ * Estratégia: cada linha tenta ser matcheada contra padrões de transação bancária.
+ */
+function extractTransactionsFromPDFLines(lines) {
+  const transactions = [];
+  let counter = 0;
+  let currentYear = new Date().getFullYear(); // fallback para datas dd/mm sem ano
+
+  // Regex para detectar data no início da linha (dd/mm/yyyy | dd/mm/yy | dd/mm)
+  const dateStartRe = /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/;
+
+  // Regex GLOBAL para localizar TODOS os valores monetários numa linha.
+  // Captura número BR (1.234,56 ou 123,45) opcionalmente precedido por R$/-
+  // e opcionalmente seguido de flag D/C. Também aceita valor entre parênteses.
+  const moneyGlobalRe = /(-)?\s*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})\s*([DCdc])?(?!\d)/g;
+  const parenGlobalRe = /\(\s*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})\s*\)/g;
+
+  // Tenta descobrir o ano dominante analisando as primeiras linhas
+  for (const line of lines.slice(0, 50)) {
+    const m = line.text.match(/\b(20\d{2})\b/);
+    if (m) { currentYear = parseInt(m[1], 10); break; }
+  }
+
+  // Regex para filtrar linhas de SALDO (não são transações, mesmo tendo data)
+  const saldoLineRe = /\bSALDO\s+(ANTERIOR|ATUAL|DO\s+DIA|BLOQUEADO|FINAL|INICIAL|EM\b|DISPON[ÍI]VEL)/i;
+  const totalLineRe = /\b(TOTAL(\s+GERAL)?|SUBTOTAL|TOTAIS?\s+DO\s+PER[ÍI]ODO)\b/i;
+
+  for (const line of lines) {
+    const text = line.text;
+    if (!text || text.length < 8) continue;
+
+    // Deve começar com data (dd/mm)
+    const dateMatch = text.match(dateStartRe);
+    if (!dateMatch) continue;
+
+    const day = parseInt(dateMatch[1], 10);
+    const month = parseInt(dateMatch[2], 10);
+    let year = dateMatch[3] ? parseInt(dateMatch[3], 10) : currentYear;
+    if (year < 100) year += year < 50 ? 2000 : 1900;
+
+    if (day < 1 || day > 31 || month < 1 || month > 12) continue;
+    const date = new Date(year, month - 1, day);
+    if (isNaN(date.getTime())) continue;
+
+    // FILTRO PRECOCE (texto bruto): pula linhas SALDO ANTERIOR/FINAL/etc e TOTAL
+    // — mesmo que comecem com data, não são transações.
+    if (saldoLineRe.test(text) || totalLineRe.test(text)) continue;
+
+    // Remove a data para trabalhar no restante da linha
+    const afterDate = text.replace(dateStartRe, '').trim();
+
+    // ========================================================================
+    // Estratégia de extração de valor:
+    // Extratos brasileiros geralmente têm duas colunas monetárias:
+    //   [Data] [Descrição] [Doc] [VALOR (com D/C)] [SALDO (sem D/C)]
+    // O VALOR é o que muda o saldo e é o dado que queremos.
+    // Regra:
+    //  1. Coleta TODOS os valores monetários da linha.
+    //  2. Se algum tem flag D/C, escolhe ESSE como valor da transação
+    //     (o último com D/C, caso haja mais de um).
+    //  3. Se há 2 valores e nenhum tem D/C: usa o PRIMEIRO como valor da
+    //     transação e assume o ÚLTIMO como saldo (heurística padrão).
+    //  4. Se há apenas 1 valor: esse é o valor da transação.
+    //  5. Parênteses = valor negativo (formato contábil).
+    // ========================================================================
+
+    let amount = null;
+    let hasDCFlag = null;
+    let balanceAfterVal = null;
+    let valueMatchToStrip = null; // trecho a remover da descrição (o valor da tx)
+    let extraToStrip = null;      // trecho extra a remover (o saldo, se houver)
+
+    // Padrão parênteses tem prioridade (nítido: contábil negativo)
+    parenGlobalRe.lastIndex = 0;
+    const parenMatches = [];
+    let pm;
+    while ((pm = parenGlobalRe.exec(afterDate)) !== null) {
+      parenMatches.push({ full: pm[0], num: pm[1], index: pm.index });
+    }
+
+    // Coleta todos os valores "normais"
+    moneyGlobalRe.lastIndex = 0;
+    const moneyMatches = [];
+    let mm;
+    while ((mm = moneyGlobalRe.exec(afterDate)) !== null) {
+      // Valida — parseBRNumber precisa retornar número válido
+      const n = parseBRNumber(mm[2]);
+      if (n === null || isNaN(n)) continue;
+      moneyMatches.push({
+        full: mm[0],
+        sign: mm[1] || '',
+        num: mm[2],
+        dc: mm[3] ? mm[3].toUpperCase() : null,
+        value: n,
+        index: mm.index,
+      });
+    }
+
+    if (parenMatches.length > 0) {
+      // Contábil: primeiro parênteses é o valor da transação
+      const first = parenMatches[0];
+      amount = -Math.abs(parseBRNumber(first.num) || 0);
+      valueMatchToStrip = first.full;
+      // Se houver um valor "normal" DEPOIS do parênteses, é o saldo
+      const afterParen = moneyMatches.find(x => x.index > first.index);
+      if (afterParen) {
+        balanceAfterVal = afterParen.value;
+        extraToStrip = afterParen.full;
+      }
+    } else if (moneyMatches.length === 0) {
+      continue; // nenhum valor — pula
+    } else if (moneyMatches.length === 1) {
+      // Único valor: é o da transação
+      const only = moneyMatches[0];
+      let n = only.value;
+      if (only.sign === '-') n = -Math.abs(n);
+      if (only.dc === 'D') n = -Math.abs(n);
+      else if (only.dc === 'C') n = Math.abs(n);
+      amount = n;
+      hasDCFlag = only.dc;
+      valueMatchToStrip = only.full;
+    } else {
+      // 2+ valores: procura o com flag D/C (é o valor da transação)
+      const withDC = moneyMatches.filter(x => x.dc);
+      if (withDC.length > 0) {
+        // Usa o último com D/C (caso o extrato inclua ambos)
+        const chosen = withDC[withDC.length - 1];
+        let n = chosen.value;
+        if (chosen.sign === '-') n = -Math.abs(n);
+        if (chosen.dc === 'D') n = -Math.abs(n);
+        else if (chosen.dc === 'C') n = Math.abs(n);
+        amount = n;
+        hasDCFlag = chosen.dc;
+        valueMatchToStrip = chosen.full;
+        // O outro valor (posterior) é o saldo
+        const afterChosen = moneyMatches.find(x => x.index > chosen.index);
+        if (afterChosen) {
+          balanceAfterVal = afterChosen.value;
+          extraToStrip = afterChosen.full;
+        }
+      } else {
+        // 2 valores sem D/C: 1º = transação, último = saldo
+        const first = moneyMatches[0];
+        const last = moneyMatches[moneyMatches.length - 1];
+        let n = first.value;
+        if (first.sign === '-') n = -Math.abs(n);
+        amount = n;
+        valueMatchToStrip = first.full;
+        balanceAfterVal = last.value;
+        extraToStrip = last.full;
+      }
+    }
+
+    if (amount === null || isNaN(amount) || amount === 0) continue;
+
+    // Extrai a descrição: remove o valor da transação e o saldo do texto após data
+    let description = afterDate;
+    if (extraToStrip) {
+      // Remove primeiro o saldo (que vem depois)
+      const idx = description.lastIndexOf(extraToStrip);
+      if (idx >= 0) description = description.slice(0, idx) + description.slice(idx + extraToStrip.length);
+    }
+    if (valueMatchToStrip) {
+      const idx = description.lastIndexOf(valueMatchToStrip);
+      if (idx >= 0) description = description.slice(0, idx) + description.slice(idx + valueMatchToStrip.length);
+    }
+    description = description.replace(/\s+/g, ' ').trim();
+
+    // Descrição precisa ter conteúdo mínimo
+    if (!description || description.length < 3) continue;
+
+    // Filtro adicional (defensivo) sobre a descrição já limpa
+    const upperDesc = description.toUpperCase();
+    if (/^(SALDO|TOTAL|SUBTOTAL)\b/.test(upperDesc)) continue;
+
+    counter++;
+    const id = 'PDF' + counter + '_' + Math.floor(date.getTime() / 1000);
+    const type = amount >= 0 ? 'credit' : 'debit';
+
+    const t = {
+      id: id,
+      date: date,
+      type: type,
+      trnType: type === 'credit' ? 'CREDIT' : 'DEBIT',
+      description: description,
+      memo: description,
+      name: '',
+      document: '',
+      amount: amount,
+      absAmount: Math.abs(amount),
+      counterparty: '',
+      counterpartyName: '',
+      counterpartyAccount: '',
+      counterpartyBank: '',
+      counterpartyBranch: '',
+      isReversal: false,
+      reversalReason: '',
+      correctFitId: '',
+      correctAction: '',
+      reversalRecipient: '',
+      reversalOriginalDate: null,
+      reversalOriginalAmount: null,
+      reversalOriginalDescription: '',
+      balanceBefore: null,
+      balanceAfter: balanceAfterVal,
+      _sourcePage: line.page,
+    };
+
+    // Detecção heurística de estorno pela descrição
+    const hasReversalKeyword = /ESTORNO|DEVOLU[ÇC][ÃA]O|DEVOLVID|REEMBOLSO|CANCELAMENTO|CANCELAD|CHARGEBACK|RESSARCIMENTO|REVERS[AÃ]O|REVERSAL/.test(upperDesc);
+    if (hasReversalKeyword) {
+      t.isReversal = true;
+      t.reversalReason = detectReversalReason(description, '', '');
+      t.reversalRecipient = extractReversalRecipient(description, '') || '';
+    }
+
+    // Extração de contraparte via heurística sobre a descrição
+    try {
+      const cp = extractCounterparty('', description, '');
+      if (cp) {
+        t.counterparty = cp.label || '';
+        t.counterpartyName = cp.name || '';
+        t.counterpartyAccount = cp.account || '';
+        t.counterpartyBank = cp.bank || '';
+        t.counterpartyBranch = cp.branch || '';
+      }
+    } catch (e) { /* ignora */ }
+
+    transactions.push(t);
+  }
+
+  // Ordena cronologicamente
+  transactions.sort((a, b) => a.date - b.date);
+
+  // Calcula balanceBefore/After acumulando (não temos saldo por linha no PDF genérico)
+  // Deixa null quando não sabemos — a UI já lida com isso
+
+  return transactions;
+}
+
+/* ---------------- Modal de preview do PDF ---------------- */
+
+function openPDFPreviewModal(bankInfo, totalPages, transactions) {
+  const modal = document.getElementById('pdf-preview-modal');
+  if (!modal) return;
+
+  // Preenche metadados
+  document.getElementById('pdf-meta-bank').textContent = bankInfo.bankName || '(não identificado)';
+  document.getElementById('pdf-meta-pages').textContent = String(totalPages);
+  document.getElementById('pdf-meta-count').textContent = String(transactions.length);
+
+  const dates = transactions.map(t => t.date).filter(d => d instanceof Date);
+  if (dates.length > 0) {
+    const start = new Date(Math.min(...dates.map(d => d.getTime())));
+    const end = new Date(Math.max(...dates.map(d => d.getTime())));
+    document.getElementById('pdf-meta-period').textContent =
+      formatShortDate(start) + ' → ' + formatShortDate(end);
+  } else {
+    document.getElementById('pdf-meta-period').textContent = '—';
+  }
+
+  renderPDFPreviewBody();
+
+  modal.classList.remove('hidden');
+  const btnClose = document.getElementById('pdf-preview-close');
+  if (btnClose) btnClose.focus();
+
+  // ESC fecha
+  const escHandler = (e) => { if (e.key === 'Escape') closePDFPreviewModal(); };
+  document.addEventListener('keydown', escHandler);
+  modal._escHandler = escHandler;
+}
+
+function closePDFPreviewModal() {
+  const modal = document.getElementById('pdf-preview-modal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+  if (modal._escHandler) {
+    document.removeEventListener('keydown', modal._escHandler);
+    modal._escHandler = null;
+  }
+  // Limpa estado temporário
+  pdfState.transactions = [];
+  pdfState.accountInfo = {};
+  pdfState.removedRows = new Set();
+}
+
+function renderPDFPreviewBody() {
+  const body = document.getElementById('pdf-preview-body');
+  if (!body) return;
+  const txs = pdfState.transactions;
+  if (!txs || txs.length === 0) {
+    body.innerHTML = '<div class="text-center py-6 text-gray-500 dark:text-slate-400 italic">Nenhuma transação extraída</div>';
+    return;
+  }
+
+  let html = '<div class="overflow-x-auto rounded border border-gray-200 dark:border-slate-700">';
+  html += '<table class="min-w-full text-xs sm:text-sm">';
+  html += '<thead class="bg-gray-100 dark:bg-slate-900 sticky top-0 z-10"><tr>';
+  html += '<th class="px-2 py-2 text-left font-semibold text-gray-600 dark:text-slate-300 border-b border-gray-200 dark:border-slate-700 w-8"></th>';
+  html += '<th class="px-2 py-2 text-left font-semibold text-gray-600 dark:text-slate-300 border-b border-gray-200 dark:border-slate-700">Pág</th>';
+  html += '<th class="px-2 py-2 text-left font-semibold text-gray-600 dark:text-slate-300 border-b border-gray-200 dark:border-slate-700">Data</th>';
+  html += '<th class="px-2 py-2 text-left font-semibold text-gray-600 dark:text-slate-300 border-b border-gray-200 dark:border-slate-700">Descrição</th>';
+  html += '<th class="px-2 py-2 text-right font-semibold text-gray-600 dark:text-slate-300 border-b border-gray-200 dark:border-slate-700">Valor</th>';
+  html += '</tr></thead><tbody>';
+
+  txs.forEach((t, idx) => {
+    const removed = pdfState.removedRows.has(idx);
+    const isRev = t.isReversal;
+    const rowCls = removed
+      ? 'bg-red-100 dark:bg-red-900/40 line-through opacity-60'
+      : (isRev ? 'bg-amber-50 dark:bg-amber-900/20' : (idx % 2 === 0 ? 'bg-white dark:bg-slate-800' : 'bg-gray-50 dark:bg-slate-900/40'));
+    const valCls = t.amount >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400';
+    html += '<tr class="' + rowCls + ' hover:bg-blue-50 dark:hover:bg-blue-900/30 cursor-pointer" data-idx="' + idx + '">';
+    html += '<td class="px-2 py-1.5 text-center">';
+    html += removed
+      ? '<i class="fas fa-undo text-red-500" title="Restaurar"></i>'
+      : '<i class="fas fa-times-circle text-gray-400 hover:text-red-500" title="Remover"></i>';
+    html += '</td>';
+    html += '<td class="px-2 py-1.5 text-gray-500 dark:text-slate-400">' + (t._sourcePage || '') + '</td>';
+    html += '<td class="px-2 py-1.5 whitespace-nowrap text-gray-700 dark:text-slate-200">' + formatShortDate(t.date) + '</td>';
+    html += '<td class="px-2 py-1.5 text-gray-800 dark:text-slate-100">' + escapeHtml(t.description);
+    if (isRev) html += ' <span class="ml-1 px-1.5 py-0.5 text-[10px] rounded bg-amber-200 dark:bg-amber-800 text-amber-900 dark:text-amber-100">' + escapeHtml(t.reversalReason) + '</span>';
+    html += '</td>';
+    html += '<td class="px-2 py-1.5 text-right font-mono font-bold whitespace-nowrap ' + valCls + '">' + formatCurrency(t.amount) + '</td>';
+    html += '</tr>';
+  });
+
+  html += '</tbody></table></div>';
+
+  // Contador ativo
+  const activeCount = txs.length - pdfState.removedRows.size;
+  html += '<div class="mt-3 text-xs text-gray-500 dark:text-slate-400 flex justify-between items-center">';
+  html += '<span><i class="fas fa-mouse-pointer mr-1"></i>Clique em uma linha para marcar/desmarcar como incorreta</span>';
+  html += '<span><strong>' + activeCount + '</strong> de ' + txs.length + ' serão importadas</span>';
+  html += '</div>';
+
+  body.innerHTML = html;
+
+  // Wire clicks para toggle
+  body.querySelectorAll('tr[data-idx]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const idx = parseInt(tr.getAttribute('data-idx'), 10);
+      if (pdfState.removedRows.has(idx)) pdfState.removedRows.delete(idx);
+      else pdfState.removedRows.add(idx);
+      renderPDFPreviewBody();
+    });
+  });
+}
+
+function confirmPDFImport() {
+  const activeTxs = pdfState.transactions.filter((_, i) => !pdfState.removedRows.has(i));
+  if (activeTxs.length === 0) {
+    alert('Nenhuma transação selecionada para importar.');
+    return;
+  }
+  // Limpa campo temporário _sourcePage antes de importar
+  for (const t of activeTxs) delete t._sourcePage;
+
+  const accountInfo = pdfState.accountInfo;
+  closePDFPreviewModal();
+  finalizeImport(accountInfo, activeTxs, 'PDF');
+}
+
+function formatShortDate(d) {
+  if (!d || !(d instanceof Date) || isNaN(d.getTime())) return '—';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  return dd + '/' + mm + '/' + yyyy;
 }
 
 /**
@@ -2548,4 +3170,19 @@ document.addEventListener('DOMContentLoaded', () => {
       if (label) label.textContent = isCollapsed ? 'Expandir' : 'Recolher';
     });
   });
+
+  // === Modal de preview do PDF ===
+  const pdfPreviewModal = document.getElementById('pdf-preview-modal');
+  const pdfPreviewClose = document.getElementById('pdf-preview-close');
+  const pdfPreviewCancel = document.getElementById('pdf-preview-cancel');
+  const pdfPreviewConfirm = document.getElementById('pdf-preview-confirm');
+
+  if (pdfPreviewClose) pdfPreviewClose.addEventListener('click', closePDFPreviewModal);
+  if (pdfPreviewCancel) pdfPreviewCancel.addEventListener('click', closePDFPreviewModal);
+  if (pdfPreviewConfirm) pdfPreviewConfirm.addEventListener('click', confirmPDFImport);
+  if (pdfPreviewModal) {
+    pdfPreviewModal.addEventListener('click', (e) => {
+      if (e.target === pdfPreviewModal) closePDFPreviewModal();
+    });
+  }
 });

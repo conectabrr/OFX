@@ -57,20 +57,34 @@ app.get('/', (c) => {
               Envie seu extrato bancário
             </h2>
             <p class="text-gray-600 dark:text-slate-300 mb-4 text-sm sm:text-base">
-              Arraste e solte o arquivo <strong>.ofx</strong> aqui ou clique para
+              Arraste e solte o arquivo <strong>.ofx</strong> ou <strong>.pdf</strong> aqui ou clique para
               selecionar
             </p>
-            <input type="file" id="file-input" accept=".ofx,.OFX" class="hidden" />
+            <input type="file" id="file-input" accept=".ofx,.OFX,.pdf,.PDF" class="hidden" />
             <button
               id="select-file-btn"
               class="bg-blue-600 hover:bg-blue-700 text-white px-4 sm:px-6 py-2 sm:py-3 rounded-lg font-medium transition text-sm sm:text-base"
             >
-              <i class="fas fa-folder-open mr-2"></i>Selecionar Arquivo OFX
+              <i class="fas fa-folder-open mr-2"></i>Selecionar Arquivo
             </button>
-            <p class="text-xs text-gray-500 dark:text-slate-400 mt-4">
-              Formatos suportados: OFX (Open Financial Exchange) - padrão de extratos
-              bancários brasileiros
+            <div class="mt-4 flex flex-wrap justify-center gap-2 text-xs">
+              <span class="inline-flex items-center gap-1 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-2 py-1 rounded">
+                <i class="fas fa-file-alt"></i> OFX (recomendado)
+              </span>
+              <span class="inline-flex items-center gap-1 bg-orange-50 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 px-2 py-1 rounded">
+                <i class="fas fa-file-pdf"></i> PDF (experimental)
+              </span>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-slate-400 mt-3 max-w-2xl mx-auto">
+              <i class="fas fa-info-circle mr-1"></i>
+              <strong>OFX</strong> é o formato mais confiável — todos os bancos brasileiros oferecem no internet banking.
+              <strong> PDF</strong> é experimental: como cada banco formata diferente, o parser pode não capturar todas as
+              transações. Sempre confira o preview antes de importar.
             </p>
+            <div id="pdf-loading" class="hidden mt-4 flex items-center justify-center gap-2 text-sm text-blue-600 dark:text-blue-400">
+              <i class="fas fa-spinner fa-spin"></i>
+              <span id="pdf-loading-text">Processando PDF...</span>
+            </div>
           </div>
 
           <div
@@ -627,6 +641,97 @@ app.get('/', (c) => {
               >
                 <i class="fas fa-download mr-1"></i>
                 <span id="export-modal-confirm-label">Baixar</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Modal de Preview do PDF (confirmação obrigatória antes de importar) */}
+      <div
+        id="pdf-preview-modal"
+        class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pdf-preview-title"
+      >
+        <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-6xl max-h-[92vh] flex flex-col overflow-hidden border border-gray-200 dark:border-slate-700">
+          {/* Header do modal */}
+          <div class="px-5 sm:px-6 py-4 border-b border-gray-200 dark:border-slate-700 bg-gradient-to-r from-orange-600 to-red-700 dark:from-slate-900 dark:to-slate-800 text-white flex items-center justify-between flex-wrap gap-2">
+            <div class="flex items-center gap-3">
+              <i class="fas fa-file-pdf text-2xl"></i>
+              <div>
+                <h3 id="pdf-preview-title" class="text-base sm:text-lg font-bold leading-tight">
+                  Prévia do Extrato PDF
+                </h3>
+                <p class="text-xs sm:text-sm text-orange-100 dark:text-slate-300">
+                  Revise as transações extraídas antes de importar
+                </p>
+              </div>
+            </div>
+            <button
+              id="pdf-preview-close"
+              type="button"
+              class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-white/10 transition"
+              title="Fechar (Esc)"
+              aria-label="Fechar modal"
+            >
+              <i class="fas fa-times text-lg"></i>
+            </button>
+          </div>
+
+          {/* Aviso importante */}
+          <div class="px-5 sm:px-6 py-3 bg-yellow-50 dark:bg-yellow-900/30 border-b border-yellow-200 dark:border-yellow-700 text-xs sm:text-sm text-yellow-800 dark:text-yellow-200">
+            <i class="fas fa-exclamation-triangle mr-1"></i>
+            <strong>Parser PDF é experimental.</strong> O layout varia por banco — confira se os valores e datas estão corretos.
+            Se muitas linhas estiverem erradas, prefira baixar o arquivo <strong>OFX</strong> do seu internet banking.
+          </div>
+
+          {/* Metadados do arquivo */}
+          <div class="px-5 sm:px-6 py-3 bg-gray-50 dark:bg-slate-900/50 border-b border-gray-200 dark:border-slate-700 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs sm:text-sm">
+            <div>
+              <div class="text-[10px] uppercase font-semibold text-gray-500 dark:text-slate-400">Banco detectado</div>
+              <div id="pdf-meta-bank" class="font-bold text-gray-800 dark:text-slate-100">—</div>
+            </div>
+            <div>
+              <div class="text-[10px] uppercase font-semibold text-gray-500 dark:text-slate-400">Páginas</div>
+              <div id="pdf-meta-pages" class="font-bold text-gray-800 dark:text-slate-100">0</div>
+            </div>
+            <div>
+              <div class="text-[10px] uppercase font-semibold text-gray-500 dark:text-slate-400">Transações extraídas</div>
+              <div id="pdf-meta-count" class="font-bold text-gray-800 dark:text-slate-100">0</div>
+            </div>
+            <div>
+              <div class="text-[10px] uppercase font-semibold text-gray-500 dark:text-slate-400">Período</div>
+              <div id="pdf-meta-period" class="font-bold text-gray-800 dark:text-slate-100">—</div>
+            </div>
+          </div>
+
+          {/* Corpo scrollável com prévia */}
+          <div class="flex-1 overflow-auto px-5 sm:px-6 py-4">
+            <div id="pdf-preview-body" class="text-xs sm:text-sm"></div>
+          </div>
+
+          {/* Rodapé com ações */}
+          <div class="px-5 sm:px-6 py-4 border-t border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-900/50 flex items-center justify-between flex-wrap gap-3">
+            <div class="text-xs text-gray-500 dark:text-slate-400">
+              <i class="fas fa-info-circle mr-1"></i>
+              <span>Clique em uma linha para removê-la se estiver incorreta</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                id="pdf-preview-cancel"
+                type="button"
+                class="px-4 py-2 rounded-lg text-sm font-medium bg-gray-200 dark:bg-slate-700 hover:bg-gray-300 dark:hover:bg-slate-600 text-gray-700 dark:text-slate-200 transition"
+              >
+                <i class="fas fa-times mr-1"></i>Cancelar
+              </button>
+              <button
+                id="pdf-preview-confirm"
+                type="button"
+                class="px-4 py-2 rounded-lg text-sm font-semibold text-white transition bg-emerald-600 hover:bg-emerald-700"
+              >
+                <i class="fas fa-check mr-1"></i>Confirmar e Analisar
               </button>
             </div>
           </div>
