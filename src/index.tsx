@@ -10,7 +10,7 @@ app.get('/', (c) => {
     <>
       {/* Header */}
       <header class="bg-gradient-to-r from-blue-700 to-indigo-800 dark:from-slate-800 dark:to-slate-900 text-white shadow-lg">
-        <div class="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-6 flex items-center justify-between gap-2 flex-wrap">
+        <div class="w-full px-3 sm:px-6 py-4 sm:py-6 flex items-center justify-between gap-2 flex-wrap">
           <div class="flex items-center gap-3">
             <i class="fas fa-file-invoice-dollar text-2xl sm:text-3xl"></i>
             <div>
@@ -22,8 +22,16 @@ app.get('/', (c) => {
           </div>
           <div class="flex items-center gap-2">
             <button
+              id="reset-btn"
+              class="hidden bg-white/10 hover:bg-white/20 rounded-lg px-3 py-2 text-xs sm:text-sm transition items-center gap-1"
+              title="Carregar outro arquivo OFX"
+            >
+              <i class="fas fa-redo"></i>
+              <span class="hidden sm:inline">Novo arquivo</span>
+            </button>
+            <button
               id="theme-toggle"
-              class="bg-white/10 hover:bg-white/20 rounded-lg p-2 text-sm transition"
+              class="bg-white/10 hover:bg-white/20 rounded-lg p-2 text-sm transition w-9 h-9 flex items-center justify-center"
               title="Alternar tema claro/escuro"
               aria-label="Alternar tema"
             >
@@ -37,7 +45,7 @@ app.get('/', (c) => {
         </div>
       </header>
 
-      <main class="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-8">
+      <main class="w-full px-3 sm:px-6 py-4 sm:py-8">
         {/* Upload Section */}
         <section id="upload-section" class="mb-6 sm:mb-8">
           <div
@@ -77,23 +85,24 @@ app.get('/', (c) => {
         {/* Dashboard */}
         <section id="dashboard" class="hidden">
           {/* Account Info */}
-          <div id="account-info" class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
-            <div class="flex items-start justify-between flex-wrap gap-4">
-              <div class="flex-1 min-w-0">
-                <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100 mb-3">
-                  <i class="fas fa-university text-blue-600 dark:text-blue-400 mr-2"></i>
-                  Informações da Conta
-                </h2>
-                <div id="account-details" class="grid grid-cols-2 md:grid-cols-4 gap-2 sm:gap-4 text-xs sm:text-sm"></div>
-              </div>
+          <div id="account-info" class="collapsible bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
+            <div class="flex items-center justify-between mb-3">
+              <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100">
+                <i class="fas fa-university text-blue-600 dark:text-blue-400 mr-2"></i>
+                Informações da Conta
+              </h2>
               <button
-                id="reset-btn"
-                class="bg-gray-100 dark:bg-slate-700 hover:bg-gray-200 dark:hover:bg-slate-600 text-gray-700 dark:text-slate-200 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm whitespace-nowrap"
+                type="button"
+                class="collapse-toggle text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 flex items-center gap-1"
+                data-target="account-details-wrapper"
+                aria-label="Recolher/expandir informações da conta"
               >
-                <i class="fas fa-redo mr-1 sm:mr-2"></i>
-                <span class="hidden sm:inline">Carregar outro arquivo</span>
-                <span class="sm:hidden">Recarregar</span>
+                <i class="fas fa-chevron-up"></i>
+                <span class="hidden sm:inline text-xs">Recolher</span>
               </button>
+            </div>
+            <div id="account-details-wrapper" class="collapsible-body">
+              <div id="account-details" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-8 gap-2 sm:gap-3 text-xs sm:text-sm justify-items-center text-center"></div>
             </div>
           </div>
 
@@ -127,10 +136,21 @@ app.get('/', (c) => {
           </div>
 
           {/* Percentage Calculator */}
-          <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
-            <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100 mb-3 sm:mb-4">
-              <i class="fas fa-calculator text-blue-600 dark:text-blue-400 mr-2"></i>Calculadora de Porcentagem
-            </h2>
+          <div class="collapsible bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
+            <div class="flex items-center justify-between mb-3 sm:mb-4">
+              <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100">
+                <i class="fas fa-calculator text-blue-600 dark:text-blue-400 mr-2"></i>Calculadora de Porcentagem
+              </h2>
+              <button
+                type="button"
+                class="collapse-toggle text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 flex items-center gap-1"
+                data-target="calc-body"
+              >
+                <i class="fas fa-chevron-up"></i>
+                <span class="hidden sm:inline text-xs">Recolher</span>
+              </button>
+            </div>
+            <div id="calc-body" class="collapsible-body">
             <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
               <div>
                 <label class="block text-xs font-semibold text-gray-600 dark:text-slate-300 mb-1">
@@ -188,15 +208,28 @@ app.get('/', (c) => {
                 Aceita valores no formato brasileiro: <code class="bg-gray-100 dark:bg-slate-700 px-1 rounded">10.000,00</code> ou <code class="bg-gray-100 dark:bg-slate-700 px-1 rounded">R$ 10.000,00</code>
               </span>
             </p>
+            </div>
           </div>
 
           {/* Chart */}
-          <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
-            <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100 mb-3 sm:mb-4">
-              <i class="fas fa-chart-line text-blue-600 dark:text-blue-400 mr-2"></i>Evolução Diária
-            </h2>
-            <div class="h-56 sm:h-72">
-              <canvas id="daily-chart"></canvas>
+          <div class="collapsible bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
+            <div class="flex items-center justify-between mb-3 sm:mb-4">
+              <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100">
+                <i class="fas fa-chart-line text-blue-600 dark:text-blue-400 mr-2"></i>Evolução Diária
+              </h2>
+              <button
+                type="button"
+                class="collapse-toggle text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 flex items-center gap-1"
+                data-target="chart-body"
+              >
+                <i class="fas fa-chevron-up"></i>
+                <span class="hidden sm:inline text-xs">Recolher</span>
+              </button>
+            </div>
+            <div id="chart-body" class="collapsible-body">
+              <div class="h-56 sm:h-72">
+                <canvas id="daily-chart"></canvas>
+              </div>
             </div>
           </div>
 
@@ -397,8 +430,19 @@ app.get('/', (c) => {
                   id="filtered-count"
                   class="ml-2 text-xs sm:text-sm font-normal text-gray-500 dark:text-slate-400"
                 ></span>
+                <span
+                  id="selection-count"
+                  class="hidden ml-2 text-xs sm:text-sm font-normal text-blue-600 dark:text-blue-400"
+                ></span>
               </h2>
-              <div class="flex items-center gap-2">
+              <div class="flex items-center gap-2 flex-wrap">
+                <button
+                  id="clear-selection"
+                  class="hidden bg-gray-100 dark:bg-slate-700 hover:bg-gray-200 dark:hover:bg-slate-600 text-gray-700 dark:text-slate-200 px-2 py-1 rounded-lg text-xs"
+                  title="Limpar seleção"
+                >
+                  <i class="fas fa-times mr-1"></i>Limpar seleção
+                </button>
                 <label class="text-xs font-semibold text-gray-600 dark:text-slate-300">Por página:</label>
                 <select
                   id="page-size"
@@ -416,23 +460,29 @@ app.get('/', (c) => {
               <table class="w-full">
                 <thead class="bg-gray-50 dark:bg-slate-900 border-b border-gray-200 dark:border-slate-700">
                   <tr>
-                    <th class="text-left px-4 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Data/Hora</th>
-                    <th class="text-left px-4 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Tipo</th>
-                    <th class="text-left px-4 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Descrição</th>
-                    <th class="text-left px-4 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Conta Destino/Origem</th>
-                    <th class="text-left px-4 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Documento</th>
-                    <th class="text-right px-4 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Valor</th>
+                    <th class="text-center px-2 py-3 w-10">
+                      <input type="checkbox" id="select-all-header" class="rounded border-gray-300 dark:border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer" title="Selecionar/desmarcar todos" />
+                    </th>
+                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Data/Hora</th>
+                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Tipo</th>
+                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Descrição</th>
+                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Conta Destino/Origem</th>
+                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">TxId</th>
+                    <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Valor</th>
+                    <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Antes</th>
+                    <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Após</th>
                   </tr>
                 </thead>
                 <tbody id="transactions-tbody" class="divide-y divide-gray-100 dark:divide-slate-700"></tbody>
                 <tfoot class="bg-gray-50 dark:bg-slate-900 border-t-2 border-gray-200 dark:border-slate-700">
                   <tr>
-                    <td colspan="5" class="px-4 py-3 text-right font-semibold text-gray-700 dark:text-slate-200">
-                      Total filtrado:
+                    <td colspan="6" class="px-3 py-3 text-right font-semibold text-gray-700 dark:text-slate-200">
+                      Total filtrado<span id="filtered-total-label">:</span>
                     </td>
-                    <td id="filtered-total" class="px-4 py-3 text-right font-bold text-gray-900 dark:text-slate-100">
+                    <td id="filtered-total" class="px-3 py-3 text-right font-bold text-gray-900 dark:text-slate-100">
                       R$ 0,00
                     </td>
+                    <td colspan="2" class="px-3 py-3"></td>
                   </tr>
                 </tfoot>
               </table>
@@ -441,7 +491,7 @@ app.get('/', (c) => {
             {/* Mobile cards */}
             <div id="transactions-mobile" class="sm:hidden divide-y divide-gray-100 dark:divide-slate-700"></div>
             <div class="sm:hidden bg-gray-50 dark:bg-slate-900 border-t-2 border-gray-200 dark:border-slate-700 px-4 py-3 flex justify-between font-semibold text-sm">
-              <span class="text-gray-700 dark:text-slate-200">Total filtrado:</span>
+              <span class="text-gray-700 dark:text-slate-200">Total filtrado<span id="filtered-total-label-mobile">:</span></span>
               <span id="filtered-total-mobile" class="text-gray-900 dark:text-slate-100">R$ 0,00</span>
             </div>
 

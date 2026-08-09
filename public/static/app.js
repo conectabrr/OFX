@@ -11,6 +11,7 @@ const state = {
   currentPage: 1,
   pageSize: 100,
   counterpartyList: [],
+  selectedIds: new Set(),   // FITIDs selecionados (checkboxes)
 };
 
 // ============================================================
@@ -217,7 +218,51 @@ function parseOFX(content) {
     );
   }
 
+  // Calcula saldo antes/após cada transação em ordem cronológica.
+  // O ponto de referência é o saldo final (BALAMT/DTASOF) informado no OFX.
+  // Trabalhamos "de trás para frente" a partir desse saldo.
+  computeBalanceEvolution(transactions, accountInfo);
+
   return { accountInfo, transactions };
+}
+
+/**
+ * Preenche balanceBefore e balanceAfter em cada transação.
+ *
+ * Estratégia:
+ *  1. Ordena por data (ascendente); transações sem data ficam por último.
+ *  2. Usa o saldo final (accountInfo.balance) como âncora.
+ *  3. Percorre de trás para frente: balanceAfter da última transação = saldo final;
+ *     balanceBefore = balanceAfter - amount.
+ *  4. Cada transação anterior tem balanceAfter = balanceBefore da seguinte.
+ *
+ * Assim, a soma acumulada bate exatamente com o saldo do extrato.
+ */
+function computeBalanceEvolution(transactions, accountInfo) {
+  const dated = transactions.filter((t) => t.date);
+  const undated = transactions.filter((t) => !t.date);
+
+  // Ordena cronologicamente (ascendente)
+  dated.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  // Se não temos saldo final, tenta usar 0 (a evolução será relativa)
+  let anchor = typeof accountInfo.balance === 'number' && !isNaN(accountInfo.balance)
+    ? accountInfo.balance
+    : 0;
+
+  // Percorre de trás para frente
+  let currentAfter = anchor;
+  for (let i = dated.length - 1; i >= 0; i--) {
+    const t = dated[i];
+    t.balanceAfter = currentAfter;
+    t.balanceBefore = currentAfter - t.amount;
+    currentAfter = t.balanceBefore;
+  }
+  // Transações sem data: marcamos como null (não é possível saber a ordem)
+  undated.forEach((t) => {
+    t.balanceBefore = null;
+    t.balanceAfter = null;
+  });
 }
 
 function getTagValue(text, tag) {
@@ -496,12 +541,16 @@ resetBtn.addEventListener('click', () => {
   state.accountInfo = {};
   state.currentPage = 1;
   state.pageSize = 100;
+  state.selectedIds.clear();
   if (state.chart) {
     state.chart.destroy();
     state.chart = null;
   }
   dashboard.classList.add('hidden');
   uploadSection.classList.remove('hidden');
+  // Esconde o botão de recarregar no header
+  resetBtn.classList.add('hidden');
+  resetBtn.classList.remove('flex', 'inline-flex');
   fileInput.value = '';
   hideError();
 });
@@ -538,6 +587,9 @@ function handleFile(file) {
       renderDashboard();
       uploadSection.classList.add('hidden');
       dashboard.classList.remove('hidden');
+      // Mostra botão de "Novo arquivo" no header
+      resetBtn.classList.remove('hidden');
+      resetBtn.classList.add('inline-flex');
     } catch (err) {
       console.error(err);
       showError('Erro ao processar arquivo: ' + err.message);
@@ -685,11 +737,11 @@ function renderAccountInfo() {
   details.innerHTML = items
     .map(
       (item) => `
-      <div class="bg-gray-50 rounded-lg p-3">
-        <div class="text-xs text-gray-500 uppercase font-semibold">
+      <div class="bg-gray-50 dark:bg-slate-900/50 rounded-lg p-3 w-full text-center">
+        <div class="text-xs text-gray-500 dark:text-slate-400 uppercase font-semibold">
           <i class="fas ${item.icon} mr-1"></i>${item.label}
         </div>
-        <div class="text-sm font-semibold text-gray-800 mt-1 break-words">${item.value}</div>
+        <div class="text-sm font-semibold text-gray-800 dark:text-slate-100 mt-1 break-words">${item.value}</div>
       </div>`
     )
     .join('');
@@ -820,8 +872,10 @@ function populateCounterpartyList() {
         count: 0,
         creditCount: 0,
         debitCount: 0,
+        reversalCount: 0,        // total de estornos com essa contraparte
         totalCredit: 0,
         totalDebit: 0,
+        totalReversal: 0,        // valor absoluto acumulado dos estornos
       });
     }
     const entry = nameCount.get(key);
@@ -832,6 +886,10 @@ function populateCounterpartyList() {
     } else {
       entry.debitCount++;
       entry.totalDebit += t.absAmount;
+    }
+    if (t.isReversal) {
+      entry.reversalCount++;
+      entry.totalReversal += t.absAmount;
     }
   });
   const sorted = [...nameCount.entries()].sort((a, b) => b[1].count - a[1].count);
@@ -899,15 +957,24 @@ function renderCounterpartyPanel() {
       // No modo "credit" só mostra crédito; "debit" só débito; "all" mostra ambos
       if (typeFilter !== 'debit' && data.totalCredit > 0) {
         flows.push(
-          `<span class="text-green-600 dark:text-green-400"><i class="fas fa-arrow-up"></i> ${formatCurrency(
+          `<span class="text-green-600 dark:text-green-400" title="Créditos"><i class="fas fa-arrow-up"></i> ${formatCurrency(
             data.totalCredit
           )}</span>`
         );
       }
       if (typeFilter !== 'credit' && data.totalDebit > 0) {
         flows.push(
-          `<span class="text-red-600 dark:text-red-400"><i class="fas fa-arrow-down"></i> ${formatCurrency(
+          `<span class="text-red-600 dark:text-red-400" title="Débitos"><i class="fas fa-arrow-down"></i> ${formatCurrency(
             data.totalDebit
+          )}</span>`
+        );
+      }
+      // Estornos: aparecem apenas em modo "todos" (nos outros modos o valor já
+      // está contado em créditos/débitos da própria transação)
+      if (typeFilter === 'all' && data.reversalCount > 0) {
+        flows.push(
+          `<span class="text-amber-600 dark:text-amber-400" title="Estornos/devoluções"><i class="fas fa-undo"></i> ${data.reversalCount} · ${formatCurrency(
+            data.totalReversal
           )}</span>`
         );
       }
@@ -917,10 +984,15 @@ function renderCounterpartyPanel() {
           : typeFilter === 'debit'
           ? data.debitCount
           : data.count;
+      // Badge de estorno na frente do nome quando em modo "todos"
+      const reversalBadge =
+        typeFilter === 'all' && data.reversalCount > 0
+          ? `<span class="badge badge-reversal ml-1 align-middle" title="${data.reversalCount} estorno(s)"><i class="fas fa-undo mr-0.5"></i>${data.reversalCount}</span>`
+          : '';
       return `
         <button type="button" data-cp="${escapeHtml(name)}"
           class="counterparty-item text-left w-full border ${activeClass} rounded-lg px-3 py-2 text-xs transition">
-          <div class="font-semibold truncate">${escapeHtml(name)}</div>
+          <div class="font-semibold truncate">${escapeHtml(name)}${reversalBadge}</div>
           <div class="flex items-center justify-between mt-1 gap-2">
             <span class="text-gray-500 dark:text-slate-400 whitespace-nowrap">${shownCount} trans.</span>
             <div class="flex gap-2 text-[11px] flex-wrap justify-end">${flows.join('')}</div>
@@ -1124,6 +1196,15 @@ function applyFilters() {
   }
 
   state.filtered = result;
+
+  // Limpa selectedIds que não estão mais visíveis após aplicar os filtros
+  if (state.selectedIds.size > 0) {
+    const visibleIds = new Set(result.map((t) => t.id));
+    for (const id of Array.from(state.selectedIds)) {
+      if (!visibleIds.has(id)) state.selectedIds.delete(id);
+    }
+  }
+
   renderTable();
   renderStats();
   renderChart();
@@ -1176,22 +1257,35 @@ function renderTable() {
       const reversalBadge = t.isReversal
         ? `<span class="badge badge-reversal ml-1" title="${escapeHtml(t.reversalReason || 'Estorno')}"><i class="fas fa-undo mr-1"></i>${escapeHtml(t.reversalReason || 'Estorno')}</span>`
         : '';
+      const isSelected = state.selectedIds.has(t.id);
+      const rowClass = isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : '';
+      const balBefore = t.balanceBefore != null
+        ? `<span class="text-gray-600 dark:text-slate-300">${formatCurrency(t.balanceBefore)}</span>`
+        : '<span class="text-gray-300 dark:text-slate-600">-</span>';
+      const balAfter = t.balanceAfter != null
+        ? `<span class="${t.balanceAfter >= 0 ? 'text-gray-800 dark:text-slate-100 font-semibold' : 'text-red-600 dark:text-red-400 font-semibold'}">${formatCurrency(t.balanceAfter)}</span>`
+        : '<span class="text-gray-300 dark:text-slate-600">-</span>';
       return `
-        <tr>
-          <td class="px-4 py-3 text-sm text-gray-700 dark:text-slate-300 whitespace-nowrap">${formatDateTime(t.date)}</td>
-          <td class="px-4 py-3 whitespace-nowrap">
+        <tr class="${rowClass}">
+          <td class="px-2 py-3 text-center">
+            <input type="checkbox" class="row-checkbox rounded border-gray-300 dark:border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer" data-id="${escapeHtml(t.id)}" ${isSelected ? 'checked' : ''} />
+          </td>
+          <td class="px-3 py-3 text-sm text-gray-700 dark:text-slate-300 whitespace-nowrap">${formatDateTime(t.date)}</td>
+          <td class="px-3 py-3 whitespace-nowrap">
             <span class="badge ${badgeClass}">
               <i class="fas fa-${t.type === 'credit' ? 'arrow-up' : 'arrow-down'} mr-1"></i>
               ${getTrnTypeLabel(t.trnType)}
             </span>
             ${reversalBadge}
           </td>
-          <td class="px-4 py-3 text-sm text-gray-800 dark:text-slate-200 max-w-md">${escapeHtml(t.description)}</td>
-          <td class="px-4 py-3 text-sm text-gray-700 dark:text-slate-300">${cpDisplay}</td>
-          <td class="px-4 py-3 text-xs text-gray-500 dark:text-slate-400 font-mono">${escapeHtml(t.document || '-')}</td>
-          <td class="px-4 py-3 text-sm font-semibold text-right whitespace-nowrap ${valueClass}">
+          <td class="px-3 py-3 text-sm text-gray-800 dark:text-slate-200 max-w-md">${escapeHtml(t.description)}</td>
+          <td class="px-3 py-3 text-sm text-gray-700 dark:text-slate-300">${cpDisplay}</td>
+          <td class="px-3 py-3 text-xs text-gray-500 dark:text-slate-400 font-mono">${escapeHtml(t.id || '-')}</td>
+          <td class="px-3 py-3 text-sm font-semibold text-right whitespace-nowrap ${valueClass}">
             ${sign} ${formatCurrency(t.absAmount)}
           </td>
+          <td class="px-3 py-3 text-xs text-right whitespace-nowrap">${balBefore}</td>
+          <td class="px-3 py-3 text-xs text-right whitespace-nowrap">${balAfter}</td>
         </tr>
       `;
     })
@@ -1208,16 +1302,30 @@ function renderTable() {
         const reversalBadge = t.isReversal
           ? `<span class="badge badge-reversal ml-1"><i class="fas fa-undo mr-1"></i>${escapeHtml(t.reversalReason || 'Estorno')}</span>`
           : '';
+        const isSelected = state.selectedIds.has(t.id);
+        const cardClass = isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : '';
+        const balanceLine =
+          t.balanceBefore != null && t.balanceAfter != null
+            ? `<div class="text-[11px] text-gray-500 dark:text-slate-400 flex items-center gap-1 flex-wrap">
+                 <span>Saldo:</span>
+                 <span>${formatCurrency(t.balanceBefore)}</span>
+                 <i class="fas fa-arrow-right text-gray-400"></i>
+                 <span class="${t.balanceAfter >= 0 ? 'text-gray-700 dark:text-slate-200 font-semibold' : 'text-red-600 dark:text-red-400 font-semibold'}">${formatCurrency(t.balanceAfter)}</span>
+               </div>`
+            : '';
         return `
-          <div class="p-3 space-y-1">
-            <div class="flex items-center justify-between gap-2">
-              <div class="flex items-center flex-wrap gap-1">
-                <span class="badge ${badgeClass}">
-                  <i class="fas fa-${t.type === 'credit' ? 'arrow-up' : 'arrow-down'} mr-1"></i>
-                  ${getTrnTypeLabel(t.trnType)}
-                </span>
-                ${reversalBadge}
-              </div>
+          <div class="p-3 space-y-1 ${cardClass}">
+            <div class="flex items-start justify-between gap-2">
+              <label class="flex items-start gap-2 flex-1 cursor-pointer">
+                <input type="checkbox" class="row-checkbox mt-1 rounded border-gray-300 dark:border-slate-500 text-blue-600 focus:ring-blue-500" data-id="${escapeHtml(t.id)}" ${isSelected ? 'checked' : ''} />
+                <div class="flex items-center flex-wrap gap-1 flex-1">
+                  <span class="badge ${badgeClass}">
+                    <i class="fas fa-${t.type === 'credit' ? 'arrow-up' : 'arrow-down'} mr-1"></i>
+                    ${getTrnTypeLabel(t.trnType)}
+                  </span>
+                  ${reversalBadge}
+                </div>
+              </label>
               <div class="text-sm font-bold whitespace-nowrap ${valueClass}">${sign} ${formatCurrency(t.absAmount)}</div>
             </div>
             <div class="text-xs text-gray-500 dark:text-slate-400">
@@ -1225,29 +1333,157 @@ function renderTable() {
             </div>
             <div class="text-sm text-gray-800 dark:text-slate-100 break-words">${escapeHtml(t.description)}</div>
             ${t.counterparty ? `<div class="text-xs text-gray-600 dark:text-slate-300"><span class="text-gray-400 dark:text-slate-500">${cpLabel}:</span> ${escapeHtml(t.counterparty)}</div>` : ''}
-            ${t.document ? `<div class="text-[11px] text-gray-400 dark:text-slate-500 font-mono">Doc: ${escapeHtml(t.document)}</div>` : ''}
+            ${balanceLine}
+            ${t.id ? `<div class="text-[11px] text-gray-400 dark:text-slate-500 font-mono">TxId: ${escapeHtml(t.id)}</div>` : ''}
           </div>
         `;
       })
       .join('');
   }
 
-  // Total filtrado = soma algébrica de TODOS os itens filtrados (não só da página)
-  const totalValue = state.filtered.reduce((sum, t) => sum + t.amount, 0);
+  // Se há seleção, o total mostrado é dos itens selecionados; caso contrário, é o total filtrado.
+  const totals = computeDisplayTotals();
   const totalClass =
-    'px-4 py-3 text-right font-bold ' +
-    (totalValue >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400');
-  filteredTotal.textContent = formatCurrency(totalValue);
+    'px-3 py-3 text-right font-bold ' +
+    (totals.value >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400');
+  filteredTotal.textContent = formatCurrency(totals.value);
   filteredTotal.className = totalClass;
   if (filteredTotalMobile) {
-    filteredTotalMobile.textContent = formatCurrency(totalValue);
+    filteredTotalMobile.textContent = formatCurrency(totals.value);
     filteredTotalMobile.className =
-      (totalValue >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400') +
+      (totals.value >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400') +
       ' font-bold';
   }
+  // Atualiza label "Total filtrado:" para " Total da seleção:" quando há seleção
+  const totalLabel = document.getElementById('filtered-total-label');
+  const totalLabelMobile = document.getElementById('filtered-total-label-mobile');
+  const labelText = totals.selected ? ` da seleção (${totals.count}):` : ':';
+  if (totalLabel) totalLabel.textContent = labelText;
+  if (totalLabelMobile) totalLabelMobile.textContent = labelText;
+
+  // Liga eventos de checkbox
+  wireRowCheckboxes();
+  updateSelectionUI();
 
   // Atualiza barra de paginação
   renderPagination(startIdx + 1, endIdx, total, pages);
+}
+
+/**
+ * Retorna o total a ser exibido no rodapé:
+ * - Se há seleção, retorna soma dos itens selecionados
+ * - Caso contrário, retorna soma de todos os filtrados
+ */
+function computeDisplayTotals() {
+  if (state.selectedIds.size > 0) {
+    const selected = state.filtered.filter((t) => state.selectedIds.has(t.id));
+    const value = selected.reduce((s, t) => s + t.amount, 0);
+    return { value, count: selected.length, selected: true };
+  }
+  const value = state.filtered.reduce((s, t) => s + t.amount, 0);
+  return { value, count: state.filtered.length, selected: false };
+}
+
+/**
+ * Conecta os checkboxes de linha (desktop + mobile) e o "selecionar todos".
+ * Chamado toda vez que a tabela é re-renderizada.
+ */
+function wireRowCheckboxes() {
+  document.querySelectorAll('.row-checkbox').forEach((cb) => {
+    cb.addEventListener('change', (e) => {
+      const id = e.target.getAttribute('data-id');
+      if (e.target.checked) state.selectedIds.add(id);
+      else state.selectedIds.delete(id);
+      // Re-render leve: só atualiza totais + destaque + header checkbox
+      updateSelectionUI();
+      updateRowHighlight();
+      updateTotalsOnSelection();
+      renderStats();
+    });
+  });
+
+  const selectAll = document.getElementById('select-all-header');
+  if (selectAll) {
+    // Estado do "todos": marcado se todos os itens da PÁGINA estão selecionados
+    const pageIds = getVisiblePageIds();
+    const allChecked = pageIds.length > 0 && pageIds.every((id) => state.selectedIds.has(id));
+    const someChecked = pageIds.some((id) => state.selectedIds.has(id));
+    selectAll.checked = allChecked;
+    selectAll.indeterminate = someChecked && !allChecked;
+
+    selectAll.onchange = (e) => {
+      const check = e.target.checked;
+      pageIds.forEach((id) => {
+        if (check) state.selectedIds.add(id);
+        else state.selectedIds.delete(id);
+      });
+      renderTable();
+      renderStats();
+    };
+  }
+}
+
+function getVisiblePageIds() {
+  const startIdx = (state.currentPage - 1) * state.pageSize;
+  const endIdx = Math.min(startIdx + state.pageSize, state.filtered.length);
+  return state.filtered.slice(startIdx, endIdx).map((t) => t.id);
+}
+
+/**
+ * Atualiza contador de seleção no cabeçalho e botão de limpar seleção.
+ */
+function updateSelectionUI() {
+  const countEl = document.getElementById('selection-count');
+  const clearBtn = document.getElementById('clear-selection');
+  const n = state.selectedIds.size;
+  if (countEl) {
+    if (n > 0) {
+      countEl.textContent = `· ${n} selecionada${n > 1 ? 's' : ''}`;
+      countEl.classList.remove('hidden');
+    } else {
+      countEl.classList.add('hidden');
+    }
+  }
+  if (clearBtn) {
+    if (n > 0) clearBtn.classList.remove('hidden');
+    else clearBtn.classList.add('hidden');
+  }
+}
+
+function updateRowHighlight() {
+  document.querySelectorAll('.row-checkbox').forEach((cb) => {
+    const id = cb.getAttribute('data-id');
+    const row = cb.closest('tr, .p-3');
+    if (!row) return;
+    if (state.selectedIds.has(id)) {
+      row.classList.add('bg-blue-50', 'dark:bg-blue-900/20');
+    } else {
+      row.classList.remove('bg-blue-50', 'dark:bg-blue-900/20');
+    }
+  });
+}
+
+function updateTotalsOnSelection() {
+  const filteredTotal = document.getElementById('filtered-total');
+  const filteredTotalMobile = document.getElementById('filtered-total-mobile');
+  const totalLabel = document.getElementById('filtered-total-label');
+  const totalLabelMobile = document.getElementById('filtered-total-label-mobile');
+  const totals = computeDisplayTotals();
+  if (filteredTotal) {
+    filteredTotal.textContent = formatCurrency(totals.value);
+    filteredTotal.className =
+      'px-3 py-3 text-right font-bold ' +
+      (totals.value >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400');
+  }
+  if (filteredTotalMobile) {
+    filteredTotalMobile.textContent = formatCurrency(totals.value);
+    filteredTotalMobile.className =
+      (totals.value >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400') +
+      ' font-bold';
+  }
+  const labelText = totals.selected ? ` da seleção (${totals.count}):` : ':';
+  if (totalLabel) totalLabel.textContent = labelText;
+  if (totalLabelMobile) totalLabelMobile.textContent = labelText;
 }
 
 function renderPagination(from, to, total, pages) {
@@ -1285,18 +1521,23 @@ function escapeHtml(str) {
 // ESTATÍSTICAS
 // ============================================================
 function renderStats() {
-  const credits = state.filtered.filter((t) => t.type === 'credit');
-  const debits = state.filtered.filter((t) => t.type === 'debit');
+  // Quando há seleção, o painel de stats mostra dados da seleção.
+  // Isso permite ao usuário somar 3 débitos específicos, por exemplo.
+  const source =
+    state.selectedIds.size > 0
+      ? state.filtered.filter((t) => state.selectedIds.has(t.id))
+      : state.filtered;
+
+  const credits = source.filter((t) => t.type === 'credit');
+  const debits = source.filter((t) => t.type === 'debit');
 
   const totalCredit = credits.reduce((s, t) => s + t.amount, 0);
   const totalDebit = debits.reduce((s, t) => s + t.absAmount, 0);
   const balance = totalCredit - totalDebit;
   const avg =
-    state.filtered.length > 0
-      ? state.filtered.reduce((s, t) => s + t.absAmount, 0) / state.filtered.length
-      : 0;
+    source.length > 0 ? source.reduce((s, t) => s + t.absAmount, 0) / source.length : 0;
 
-  document.getElementById('stat-count').textContent = state.filtered.length;
+  document.getElementById('stat-count').textContent = source.length;
   document.getElementById('stat-credit').textContent = formatCurrency(totalCredit);
   document.getElementById('stat-credit-count').textContent = `${credits.length} entradas`;
   document.getElementById('stat-debit').textContent = formatCurrency(totalDebit);
@@ -1304,7 +1545,10 @@ function renderStats() {
   const balanceEl = document.getElementById('stat-balance');
   balanceEl.textContent = formatCurrency(balance);
   balanceEl.className =
-    'text-2xl font-bold mt-1 ' + (balance >= 0 ? 'text-indigo-600' : 'text-red-600');
+    'text-base sm:text-2xl font-bold mt-1 ' +
+    (balance >= 0
+      ? 'text-indigo-600 dark:text-indigo-400'
+      : 'text-red-600 dark:text-red-400');
   document.getElementById('stat-avg').textContent = formatCurrency(avg);
 }
 
@@ -1339,6 +1583,12 @@ function renderChart() {
   if (state.chart) {
     state.chart.destroy();
   }
+
+  // Cores adaptativas ao tema atual
+  const isDark = document.documentElement.classList.contains('dark');
+  const gridColor = isDark ? 'rgba(148, 163, 184, 0.15)' : 'rgba(0, 0, 0, 0.08)';
+  const tickColor = isDark ? '#cbd5e1' : '#475569';
+
   state.chart = new Chart(ctx, {
     type: 'bar',
     data: {
@@ -1364,7 +1614,7 @@ function renderChart() {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: { position: 'top' },
+        legend: { position: 'top', labels: { color: tickColor } },
         tooltip: {
           callbacks: {
             label: (ctx) => `${ctx.dataset.label}: ${formatCurrency(ctx.parsed.y)}`,
@@ -1372,9 +1622,14 @@ function renderChart() {
         },
       },
       scales: {
+        x: {
+          ticks: { color: tickColor },
+          grid: { color: gridColor },
+        },
         y: {
           beginAtZero: true,
           ticks: {
+            color: tickColor,
             callback: (value) =>
               new Intl.NumberFormat('pt-BR', {
                 style: 'currency',
@@ -1382,6 +1637,7 @@ function renderChart() {
                 maximumFractionDigits: 0,
               }).format(value),
           },
+          grid: { color: gridColor },
         },
       },
     },
@@ -1392,7 +1648,12 @@ function renderChart() {
 // EXPORTAÇÃO CSV
 // ============================================================
 function exportCSV() {
-  if (state.filtered.length === 0) {
+  // Se há seleção, exporta apenas os selecionados; senão, todos os filtrados
+  const source =
+    state.selectedIds.size > 0
+      ? state.filtered.filter((t) => state.selectedIds.has(t.id))
+      : state.filtered;
+  if (source.length === 0) {
     alert('Nenhuma transação para exportar.');
     return;
   }
@@ -1401,16 +1662,22 @@ function exportCSV() {
     'Tipo',
     'Descrição',
     'Conta Destino/Origem',
-    'Documento',
+    'TxId',
     'Valor',
+    'Saldo Antes',
+    'Saldo Após',
+    'Estorno',
   ];
-  const rows = state.filtered.map((t) => [
+  const rows = source.map((t) => [
     formatDateTime(t.date),
     getTrnTypeLabel(t.trnType),
     t.description.replace(/"/g, '""'),
     (t.counterparty || '').replace(/"/g, '""'),
-    t.document || '',
+    t.id || '',
     t.amount.toFixed(2).replace('.', ','),
+    t.balanceBefore != null ? t.balanceBefore.toFixed(2).replace('.', ',') : '',
+    t.balanceAfter != null ? t.balanceAfter.toFixed(2).replace('.', ',') : '',
+    t.isReversal ? t.reversalReason || 'Sim' : '',
   ]);
   const csv = [
     headers.join(';'),
@@ -1442,7 +1709,12 @@ function exportCSV() {
  * Usa jsPDF + autotable (carregados via CDN).
  */
 function exportPDF() {
-  if (state.filtered.length === 0) {
+  // Se há seleção, exporta apenas os selecionados
+  const source =
+    state.selectedIds.size > 0
+      ? state.filtered.filter((t) => state.selectedIds.has(t.id))
+      : state.filtered;
+  if (source.length === 0) {
     alert('Nenhuma transação para exportar.');
     return;
   }
@@ -1497,57 +1769,67 @@ function exportPDF() {
     y += 5 * split.length;
   }
 
-  // Estatísticas
-  const credits = state.filtered.filter((t) => t.type === 'credit');
-  const debits = state.filtered.filter((t) => t.type === 'debit');
+  // Estatísticas (baseadas em source: seleção OU filtrados)
+  const credits = source.filter((t) => t.type === 'credit');
+  const debits = source.filter((t) => t.type === 'debit');
   const totalCredit = credits.reduce((s, t) => s + t.amount, 0);
   const totalDebit = debits.reduce((s, t) => s + t.absAmount, 0);
   const balance = totalCredit - totalDebit;
-  const reversalCount = state.filtered.filter((t) => t.isReversal).length;
+  const reversalCount = source.filter((t) => t.isReversal).length;
 
   y += 2;
   doc.setFont('helvetica', 'bold');
-  doc.text('Resumo:', 14, y);
+  const scopeLabel = state.selectedIds.size > 0 ? 'Resumo (seleção):' : 'Resumo:';
+  doc.text(scopeLabel, 14, y);
   doc.setFont('helvetica', 'normal');
   const stats = [
-    `Transações: ${state.filtered.length}`,
+    `Transações: ${source.length}`,
     `Créditos: ${formatCurrency(totalCredit)} (${credits.length})`,
     `Débitos: ${formatCurrency(totalDebit)} (${debits.length})`,
     `Saldo: ${formatCurrency(balance)}`,
   ];
   if (reversalCount > 0) stats.push(`Estornos: ${reversalCount}`);
-  doc.text(stats.join('   |   '), 32, y);
+  doc.text(stats.join('   |   '), 40, y);
   y += 6;
 
   // Tabela de transações
-  const rows = state.filtered.map((t) => [
+  const rows = source.map((t) => [
     formatDateTime(t.date),
     getTrnTypeLabel(t.trnType) + (t.isReversal ? ' (Estorno)' : ''),
     t.description,
     t.counterparty || '-',
-    t.document || '-',
+    t.id || '-',
     (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount),
+    t.balanceBefore != null ? formatCurrency(t.balanceBefore) : '-',
+    t.balanceAfter != null ? formatCurrency(t.balanceAfter) : '-',
   ]);
 
   doc.autoTable({
     startY: y,
-    head: [['Data/Hora', 'Tipo', 'Descrição', 'Conta Destino/Origem', 'Documento', 'Valor']],
+    head: [['Data/Hora', 'Tipo', 'Descrição', 'Conta Destino/Origem', 'TxId', 'Valor', 'Saldo Antes', 'Saldo Após']],
     body: rows,
-    styles: { fontSize: 7, cellPadding: 1.5, overflow: 'linebreak' },
-    headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold' },
+    styles: { fontSize: 6.5, cellPadding: 1.3, overflow: 'linebreak' },
+    headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold', fontSize: 7 },
     alternateRowStyles: { fillColor: [248, 250, 252] },
     columnStyles: {
-      0: { cellWidth: 30 },
-      1: { cellWidth: 35 },
+      0: { cellWidth: 28 },
+      1: { cellWidth: 30 },
       2: { cellWidth: 'auto' },
-      3: { cellWidth: 55 },
-      4: { cellWidth: 25 },
-      5: { cellWidth: 28, halign: 'right', fontStyle: 'bold' },
+      3: { cellWidth: 45 },
+      4: { cellWidth: 22 },
+      5: { cellWidth: 24, halign: 'right', fontStyle: 'bold' },
+      6: { cellWidth: 24, halign: 'right' },
+      7: { cellWidth: 24, halign: 'right', fontStyle: 'bold' },
     },
     didParseCell: (data) => {
       if (data.section === 'body' && data.column.index === 5) {
-        const value = state.filtered[data.row.index].amount;
+        const value = source[data.row.index].amount;
         data.cell.styles.textColor = value >= 0 ? [22, 163, 74] : [220, 38, 38];
+      }
+      // Saldo após negativo em vermelho
+      if (data.section === 'body' && data.column.index === 7) {
+        const bal = source[data.row.index].balanceAfter;
+        if (bal != null && bal < 0) data.cell.styles.textColor = [220, 38, 38];
       }
     },
     didDrawPage: (data) => {
@@ -1578,7 +1860,11 @@ function exportPDF() {
   doc.setFontSize(10);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(0);
-  doc.text('Total filtrado:', pageWidth - 60, endY, { align: 'right' });
+  const totalLabel =
+    state.selectedIds.size > 0
+      ? `Total da seleção (${source.length}):`
+      : 'Total filtrado:';
+  doc.text(totalLabel, pageWidth - 60, endY, { align: 'right' });
   doc.setTextColor(balance >= 0 ? 22 : 220, balance >= 0 ? 163 : 38, balance >= 0 ? 74 : 38);
   doc.text(formatCurrency(balance), pageWidth - 14, endY, { align: 'right' });
 
@@ -1594,29 +1880,36 @@ function exportPDF() {
  */
 function setTheme(theme) {
   const isDark = theme === 'dark';
+  // Aplica a classe .dark no elemento raiz — Tailwind foi configurado com darkMode:'class'
   document.documentElement.classList.toggle('dark', isDark);
   try {
     localStorage.setItem('theme', theme);
   } catch (e) {}
   const icon = document.getElementById('theme-icon');
   if (icon) {
+    // No modo escuro mostra o sol (para voltar ao claro); no claro mostra a lua
     icon.className = isDark ? 'fas fa-sun' : 'fas fa-moon';
   }
-  // Se o gráfico existe, força re-render para atualizar cores dos ticks
-  if (state.chart && typeof renderChart === 'function' && state.filtered.length > 0) {
-    renderChart();
+  // Se o gráfico existe, re-renderiza para atualizar cores das grades/labels
+  try {
+    if (state.chart && state.filtered && state.filtered.length > 0) {
+      renderChart();
+    }
+  } catch (e) {
+    console.warn('Erro ao atualizar gráfico após mudança de tema:', e);
   }
 }
 
 function initTheme() {
-  const saved = (() => {
-    try {
-      return localStorage.getItem('theme');
-    } catch (e) {
-      return null;
-    }
-  })();
-  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  let saved = null;
+  try {
+    saved = localStorage.getItem('theme');
+  } catch (e) {}
+  // Só respeita prefers-color-scheme se NÃO houver preferência salva
+  const prefersDark =
+    !saved &&
+    window.matchMedia &&
+    window.matchMedia('(prefers-color-scheme: dark)').matches;
   const theme = saved || (prefersDark ? 'dark' : 'light');
   setTheme(theme);
 }
@@ -1633,4 +1926,31 @@ document.addEventListener('DOMContentLoaded', () => {
   // Wire PDF button
   const pdfBtn = document.getElementById('export-pdf');
   if (pdfBtn) pdfBtn.addEventListener('click', exportPDF);
+
+  // Wire botão limpar seleção
+  const clearSel = document.getElementById('clear-selection');
+  if (clearSel) {
+    clearSel.addEventListener('click', () => {
+      state.selectedIds.clear();
+      renderTable();
+      renderStats();
+    });
+  }
+
+  // Wire botões de expandir/recolher (aplica para qualquer .collapse-toggle com data-target)
+  document.querySelectorAll('.collapse-toggle').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.getAttribute('data-target');
+      const target = targetId ? document.getElementById(targetId) : null;
+      if (!target) return;
+      const isCollapsed = target.classList.toggle('collapsed');
+      const icon = btn.querySelector('i');
+      const label = btn.querySelector('span');
+      if (icon) {
+        icon.classList.toggle('fa-chevron-up', !isCollapsed);
+        icon.classList.toggle('fa-chevron-down', isCollapsed);
+      }
+      if (label) label.textContent = isCollapsed ? 'Expandir' : 'Recolher';
+    });
+  });
 });

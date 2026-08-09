@@ -22,12 +22,62 @@
 ### 🌓 Tema Claro / Escuro
 - Alternância entre modo claro e escuro pelo botão no cabeçalho (ícone lua/sol)
 - Preferência salva em `localStorage` e restaurada sem "flash" ao recarregar
-- Respeita `prefers-color-scheme` do sistema na primeira visita
+- Respeita `prefers-color-scheme` do sistema **apenas na primeira visita** — depois disso a escolha do usuário prevalece sobre a preferência do sistema
+- Cores adaptativas no gráfico (grades e labels)
+- Cards de resumo, painéis e tabela todos com variantes escuras
+
+### 📐 Layout em Largura Total
+- A página ocupa **toda a largura** disponível (não há mais `max-w-7xl`) para melhor visualização das colunas
+- Colunas da tabela aproveitam telas ultrawide sem cortes horizontais
+- Cabeçalho e todos os cards se adaptam automaticamente
+
+### ☑️ Seleção de Transações Específicas
+- Checkbox em cada linha (desktop) e em cada card (mobile) permite selecionar transações
+- Checkbox no cabeçalho da tabela seleciona/desmarca todas as transações **da página atual**
+- Estado indeterminado (traço) quando parte das transações da página está selecionada
+- Ao selecionar transações:
+  - Cards de resumo (Créditos, Débitos, Saldo, Ticket Médio) mostram totais **da seleção**
+  - Rodapé da tabela mostra "Total da seleção (N):"
+  - Exportações CSV e PDF exportam **apenas os itens selecionados**
+- Botão "Limpar seleção" aparece no cabeçalho da tabela quando há itens selecionados
+- Ao aplicar filtros, itens selecionados que ficam fora do escopo são automaticamente removidos da seleção
+
+### 📊 Colunas Saldo Antes / Saldo Após
+- Ao lado da coluna Valor, duas novas colunas mostram a evolução do saldo:
+  - **Saldo Antes** — saldo da conta imediatamente antes desta transação
+  - **Saldo Após** — saldo da conta imediatamente depois desta transação (fica em vermelho quando negativo)
+- Calculado a partir do saldo final (`BALAMT` do OFX) percorrendo as transações em ordem cronológica
+- Permite análise da evolução do saldo transação a transação, útil para identificar quando a conta ficou negativa
+
+### 🗂️ Coluna TxId (antes: Documento)
+- Renomeada de "Documento" para **TxId** (Transaction ID)
+- Mostra o `FITID` do OFX — identificador único da transação atribuído pelo banco
+- Também usado como identificador nos checkboxes de seleção
+
+### 📦 Cards Colapsáveis
+Os seguintes cards podem ser recolhidos/expandidos individualmente com botão no canto superior direito:
+- **Informações da Conta**
+- **Calculadora de Porcentagem**
+- **Evolução Diária** (gráfico)
+- **Contrapartes** (já existia)
+
+Ideal para focar na tabela em telas menores ou ocultar temporariamente informações não relevantes.
+
+### 🔄 Botão Novo Arquivo Reposicionado
+- Movido de dentro do card "Informações da Conta" para o **cabeçalho** (ao lado do toggle de tema)
+- Sempre visível quando há um arquivo carregado, sem depender de rolar/expandir cards
+- Aparece apenas após um arquivo ser carregado (fica oculto na tela inicial)
 
 ### 📱 Responsividade Mobile
 - Layout adaptativo para celulares, tablets e desktop (breakpoints `sm:`, `md:`, `lg:`)
 - Em telas pequenas a tabela vira **cards** com data, tipo, descrição, contraparte e valor
 - Cabeçalho, filtros e painéis todos com espaçamento otimizado para toque
+
+### 👥 Painel de Contrapartes com Contagem de Estornos
+Além da contagem por tipo (crédito/débito), o painel de Contrapartes agora mostra:
+- **No modo "Todas"**: badge amarelo com número de estornos por contraparte + valor total de estornos
+- Ícone de "undo" (↺) ao lado do nome quando a contraparte tem estornos associados
+- Nos modos "Créditos" ou "Débitos" o dado de estorno fica oculto (já contabilizado no crédito/débito da própria transação)
 
 ### 🔄 Filtro de Estorno / Devolução
 - Detecção automática por:
