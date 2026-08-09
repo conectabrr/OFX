@@ -12,6 +12,7 @@ const state = {
   pageSize: 100,
   counterpartyList: [],
   selectedIds: new Set(),   // FITIDs selecionados (checkboxes)
+  reversalOnlyMode: false,  // Botão exclusivo: mostra apenas transações de estorno
 };
 
 // ============================================================
@@ -190,6 +191,18 @@ function parseOFX(content) {
     }
     if (!description) description = trnType;
 
+    // Detalhes do estorno: destinatário original e motivo
+    let reversalReason = '';
+    let reversalRecipient = '';
+    if (isReversal) {
+      reversalReason = detectReversalReason(memo, name, correctFitId);
+      // Destinatário original = a pessoa/empresa a quem a transação corrigida
+      // foi enviada. Para estornos, o counterpartyName atual já é o destinatário
+      // original (o dinheiro está voltando dele). Se não temos, tentamos
+      // extrair do MEMO padrões brasileiros.
+      reversalRecipient = counterparty.name || extractReversalRecipient(memo, name);
+    }
+
     transactions.push({
       id: fitId || `trn-${idx++}`,
       date: dtPosted,
@@ -207,10 +220,31 @@ function parseOFX(content) {
       counterpartyBranch: counterparty.branch,
       counterpartyName: counterparty.name,
       isReversal,                              // boolean: é estorno/devolução?
-      reversalReason: isReversal ? detectReversalReason(memo, name, correctFitId) : '',
+      reversalReason,                          // ex: "Estorno", "Devolução", "Reembolso"
+      reversalRecipient,                       // Nome do destinatário original do débito
       correctFitId,                            // FITID da transação sendo corrigida
+      correctAction,                           // REPLACE | DELETE (se OFX estruturado)
     });
   }
+
+  // Pós-processamento: para cada estorno com correctFitId, tenta resolver o
+  // nome do destinatário original olhando a transação corrigida.
+  const byId = new Map(transactions.map((t) => [t.id, t]));
+  transactions.forEach((t) => {
+    if (t.isReversal && t.correctFitId) {
+      const original = byId.get(t.correctFitId);
+      if (original) {
+        // Se o estorno ainda não tem destinatário, herda do original
+        if (!t.reversalRecipient) {
+          t.reversalRecipient = original.counterpartyName || original.counterparty || '';
+        }
+        // Guarda referências úteis
+        t.reversalOriginalDate = original.date;
+        t.reversalOriginalAmount = original.amount;
+        t.reversalOriginalDescription = original.description;
+      }
+    }
+  });
 
   if (transactions.length === 0) {
     throw new Error(
@@ -305,8 +339,8 @@ function detectReversal(trnType, memo, name, correctFitId, correctAction) {
 }
 
 function detectReversalReason(memo, name, correctFitId) {
-  if (correctFitId) return `Corrige transação ${correctFitId}`;
   const text = `${memo} ${name}`.toUpperCase();
+  // Detecção por palavras-chave tem prioridade sobre "correção genérica"
   const patterns = [
     { re: /ESTORNO/, reason: 'Estorno' },
     { re: /DEVOLU[ÇC][ÃA]O|DEVOLVID[OA]/, reason: 'Devolução' },
@@ -317,7 +351,35 @@ function detectReversalReason(memo, name, correctFitId) {
     { re: /REVERS[AÃ]O|REVERSAL/, reason: 'Reversão' },
   ];
   for (const p of patterns) if (p.re.test(text)) return p.reason;
+  if (correctFitId) return 'Correção (OFX)';
   return 'Estorno';
+}
+
+/**
+ * Extrai o nome do destinatário original de um estorno a partir do MEMO/NAME.
+ * Padrões brasileiros típicos:
+ *  - "ESTORNO IFOOD PEDIDO ALMOÇO"       → IFOOD
+ *  - "DEVOLUÇÃO COMPRA CANCELADA MAGAZINE" → MAGAZINE
+ *  - "REEMBOLSO NETFLIX ASSINATURA"      → NETFLIX
+ *  - "ESTORNO PIX ENVIADO PARA JOAO"     → JOAO
+ */
+function extractReversalRecipient(memo, name) {
+  const source = `${memo} ${name}`.trim();
+  if (!source) return '';
+  // Tenta capturar o "assunto" após a palavra-chave de estorno
+  const patterns = [
+    // "ESTORNO PIX ENVIADO PARA <NOME>" ou "ESTORNO PARA <NOME>"
+    /(?:ESTORNO|DEVOLU[ÇC][ÃA]O|REEMBOLSO|CANCELAMENTO|CHARGEBACK|RESSARCIMENTO|REVERS[AÃ]O)\s+(?:PIX|TED|DOC|TRANSF(?:ERENCIA)?|PAGAMENTO|PAGTO|COMPRA|DEBITO)?\s*(?:ENVIADO|ENVIADA|CANCELAD[OA]|PARA|A|DE)?\s+([A-ZÀ-Ú][A-ZÀ-Ú0-9\s.&'-]{2,60}?)(?=\s+(?:PEDIDO|COMPRA|ASSINATURA|CPF|CNPJ|AG\.|CC\.|BCO|BANCO|-|$))/i,
+    // "ESTORNO <NOME>" seguido de descrição
+    /(?:ESTORNO|DEVOLU[ÇC][ÃA]O|REEMBOLSO)\s+([A-ZÀ-Ú][A-ZÀ-Ú0-9&.'-]{2,40})(?=\s|$)/i,
+  ];
+  for (const re of patterns) {
+    const m = source.match(re);
+    if (m && m[1]) {
+      return m[1].trim().replace(/\s+/g, ' ');
+    }
+  }
+  return '';
 }
 
 function getBlockValue(text, blockTag) {
@@ -699,13 +761,32 @@ function renderDashboard() {
 function updateReversalUI() {
   const wrapper = document.getElementById('reversal-filter-wrapper');
   const countEl = document.getElementById('reversal-count');
-  if (!wrapper || !countEl) return;
+  const cpToggle = document.getElementById('counterparty-reversal-toggle');
+  const cpBadge = document.getElementById('counterparty-reversal-badge');
   const total = state.transactions.filter((t) => t.isReversal).length;
-  countEl.textContent = String(total);
-  if (total > 0) {
-    wrapper.classList.remove('hidden');
-  } else {
-    wrapper.classList.add('hidden');
+  if (countEl) countEl.textContent = String(total);
+  if (cpBadge) cpBadge.textContent = String(total);
+  if (wrapper) {
+    if (total > 0) wrapper.classList.remove('hidden');
+    else wrapper.classList.add('hidden');
+  }
+  // Botão exclusivo de estorno no painel de contrapartes
+  if (cpToggle) {
+    if (total > 0) {
+      cpToggle.classList.remove('hidden');
+      cpToggle.classList.add('flex');
+    } else {
+      cpToggle.classList.add('hidden');
+      cpToggle.classList.remove('flex');
+    }
+    // Sincroniza estado visual (active) com state.reversalOnlyMode
+    if (state.reversalOnlyMode) {
+      cpToggle.classList.add('active');
+      cpToggle.setAttribute('aria-pressed', 'true');
+    } else {
+      cpToggle.classList.remove('active');
+      cpToggle.setAttribute('aria-pressed', 'false');
+    }
   }
 }
 
@@ -910,9 +991,12 @@ function renderCounterpartyPanel() {
   if (!panel) return;
 
   const typeFilter = filterType.value; // 'all' | 'credit' | 'debit'
+  const reversalOnly = state.reversalOnlyMode;
 
-  // Filtra a lista pela tipagem selecionada
-  const scoped = (state.counterpartyList || []).filter(([, data]) => {
+  // Filtra a lista pela tipagem selecionada.
+  // Se o modo "apenas estornos" está ativo, mostra somente contrapartes que TÊM estornos.
+  let scoped = (state.counterpartyList || []).filter(([, data]) => {
+    if (reversalOnly) return data.reversalCount > 0;
     if (typeFilter === 'credit') return data.creditCount > 0;
     if (typeFilter === 'debit') return data.debitCount > 0;
     return true;
@@ -934,16 +1018,22 @@ function renderCounterpartyPanel() {
   }
 
   if (scoped.length === 0) {
-    panel.innerHTML =
-      '<p class="text-xs text-slate-400 italic p-2 col-span-full">Nenhuma contraparte encontrada para este tipo.</p>';
+    const emptyMsg = reversalOnly
+      ? 'Nenhum estorno neste extrato.'
+      : 'Nenhuma contraparte encontrada para este tipo.';
+    panel.innerHTML = `<p class="text-xs text-slate-400 italic p-2 col-span-full">${emptyMsg}</p>`;
     if (countLabel) countLabel.textContent = '';
     return;
   }
   if (countLabel) {
     const total = state.counterpartyList.length;
     const shown = scoped.length;
-    countLabel.textContent =
-      typeFilter === 'all' ? `(${total})` : `(${shown} de ${total})`;
+    if (reversalOnly) {
+      countLabel.textContent = `(${shown} com estornos)`;
+    } else {
+      countLabel.textContent =
+        typeFilter === 'all' ? `(${total})` : `(${shown} de ${total})`;
+    }
   }
 
   const currentFilter = filterCounterparty.value.trim().toLowerCase();
@@ -954,39 +1044,50 @@ function renderCounterpartyPanel() {
         ? 'bg-blue-100 dark:bg-blue-900 border-blue-400 dark:border-blue-500 text-blue-800 dark:text-blue-200'
         : 'bg-white dark:bg-slate-800 hover:bg-gray-50 dark:hover:bg-slate-700 border-gray-200 dark:border-slate-600 text-gray-700 dark:text-slate-200';
       const flows = [];
-      // No modo "credit" só mostra crédito; "debit" só débito; "all" mostra ambos
-      if (typeFilter !== 'debit' && data.totalCredit > 0) {
-        flows.push(
-          `<span class="text-green-600 dark:text-green-400" title="Créditos"><i class="fas fa-arrow-up"></i> ${formatCurrency(
-            data.totalCredit
-          )}</span>`
-        );
+      // Modo "somente estornos": mostra apenas o total de estornos
+      if (reversalOnly) {
+        if (data.reversalCount > 0) {
+          flows.push(
+            `<span class="text-amber-600 dark:text-amber-400" title="Estornos/devoluções"><i class="fas fa-undo"></i> ${formatCurrency(
+              data.totalReversal
+            )}</span>`
+          );
+        }
+      } else {
+        // Modo normal: mostra créditos e/ou débitos conforme o filtro de tipo
+        if (typeFilter !== 'debit' && data.totalCredit > 0) {
+          flows.push(
+            `<span class="text-green-600 dark:text-green-400" title="Créditos"><i class="fas fa-arrow-up"></i> ${formatCurrency(
+              data.totalCredit
+            )}</span>`
+          );
+        }
+        if (typeFilter !== 'credit' && data.totalDebit > 0) {
+          flows.push(
+            `<span class="text-red-600 dark:text-red-400" title="Débitos"><i class="fas fa-arrow-down"></i> ${formatCurrency(
+              data.totalDebit
+            )}</span>`
+          );
+        }
+        // Sempre mostra o badge de estornos quando existir (independente do tipo)
+        if (data.reversalCount > 0) {
+          flows.push(
+            `<span class="text-amber-600 dark:text-amber-400" title="Estornos/devoluções"><i class="fas fa-undo"></i> ${data.reversalCount} · ${formatCurrency(
+              data.totalReversal
+            )}</span>`
+          );
+        }
       }
-      if (typeFilter !== 'credit' && data.totalDebit > 0) {
-        flows.push(
-          `<span class="text-red-600 dark:text-red-400" title="Débitos"><i class="fas fa-arrow-down"></i> ${formatCurrency(
-            data.totalDebit
-          )}</span>`
-        );
-      }
-      // Estornos: aparecem apenas em modo "todos" (nos outros modos o valor já
-      // está contado em créditos/débitos da própria transação)
-      if (typeFilter === 'all' && data.reversalCount > 0) {
-        flows.push(
-          `<span class="text-amber-600 dark:text-amber-400" title="Estornos/devoluções"><i class="fas fa-undo"></i> ${data.reversalCount} · ${formatCurrency(
-            data.totalReversal
-          )}</span>`
-        );
-      }
-      const shownCount =
-        typeFilter === 'credit'
+      const shownCount = reversalOnly
+        ? data.reversalCount
+        : typeFilter === 'credit'
           ? data.creditCount
           : typeFilter === 'debit'
           ? data.debitCount
           : data.count;
-      // Badge de estorno na frente do nome quando em modo "todos"
+      // Badge de estorno sempre visível quando há estornos
       const reversalBadge =
-        typeFilter === 'all' && data.reversalCount > 0
+        data.reversalCount > 0
           ? `<span class="badge badge-reversal ml-1 align-middle" title="${data.reversalCount} estorno(s)"><i class="fas fa-undo mr-0.5"></i>${data.reversalCount}</span>`
           : '';
       return `
@@ -1168,12 +1269,18 @@ function applyFilters() {
   if (minV !== null) result = result.filter((t) => t.absAmount >= minV);
   if (maxV !== null) result = result.filter((t) => t.absAmount <= maxV);
 
-  // Filtro por estorno/devolução
+  // Filtro por estorno/devolução (dropdown do painel de filtros)
   const filterReversalEl = document.getElementById('filter-reversal');
   if (filterReversalEl) {
     const rvMode = filterReversalEl.value;
     if (rvMode === 'only') result = result.filter((t) => t.isReversal);
     else if (rvMode === 'exclude') result = result.filter((t) => !t.isReversal);
+  }
+
+  // Botão EXCLUSIVO de estorno (Contrapartes) - independente do filtro de tipo
+  // Sobrepõe qualquer outro filtro: mostra APENAS estornos.
+  if (state.reversalOnlyMode) {
+    result = result.filter((t) => t.isReversal);
   }
 
   // Ordenação
@@ -1245,6 +1352,7 @@ function renderTable() {
   const pageItems = state.filtered.slice(startIdx, endIdx);
 
   // Renderização desktop (tabela)
+  const dash = '<span class="text-gray-300 dark:text-slate-600">-</span>';
   tbody.innerHTML = pageItems
     .map((t) => {
       const badgeClass = t.type === 'credit' ? 'badge-credit' : 'badge-debit';
@@ -1253,18 +1361,30 @@ function renderTable() {
       const cpLabel = t.type === 'credit' ? 'De' : 'Para';
       const cpDisplay = t.counterparty
         ? `<span class="text-gray-400 dark:text-slate-500 mr-1">${cpLabel}:</span>${escapeHtml(t.counterparty)}`
-        : '<span class="text-gray-300 dark:text-slate-600">-</span>';
+        : dash;
       const reversalBadge = t.isReversal
         ? `<span class="badge badge-reversal ml-1" title="${escapeHtml(t.reversalReason || 'Estorno')}"><i class="fas fa-undo mr-1"></i>${escapeHtml(t.reversalReason || 'Estorno')}</span>`
         : '';
       const isSelected = state.selectedIds.has(t.id);
-      const rowClass = isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : '';
+      const rowClass = isSelected
+        ? 'bg-blue-50 dark:bg-blue-900/20'
+        : (t.isReversal ? 'bg-amber-50/40 dark:bg-amber-900/10' : '');
       const balBefore = t.balanceBefore != null
         ? `<span class="text-gray-600 dark:text-slate-300">${formatCurrency(t.balanceBefore)}</span>`
-        : '<span class="text-gray-300 dark:text-slate-600">-</span>';
+        : dash;
       const balAfter = t.balanceAfter != null
         ? `<span class="${t.balanceAfter >= 0 ? 'text-gray-800 dark:text-slate-100 font-semibold' : 'text-red-600 dark:text-red-400 font-semibold'}">${formatCurrency(t.balanceAfter)}</span>`
-        : '<span class="text-gray-300 dark:text-slate-600">-</span>';
+        : dash;
+      // Colunas exclusivas de estorno
+      const reversalReasonCell = t.isReversal
+        ? `<span class="badge badge-reversal"><i class="fas fa-undo mr-1"></i>${escapeHtml(t.reversalReason || 'Estorno')}</span>`
+        : dash;
+      const reversalRecipientCell = t.isReversal && t.reversalRecipient
+        ? `<span class="text-amber-800 dark:text-amber-200 font-medium" title="Destinatário original do débito estornado">${escapeHtml(t.reversalRecipient)}</span>`
+        : (t.isReversal ? '<span class="text-gray-400 dark:text-slate-500 italic text-xs">Não identificado</span>' : dash);
+      const correctFitCell = t.isReversal && t.correctFitId
+        ? `<span class="text-xs text-amber-700 dark:text-amber-300 font-mono" title="FITID da transação original corrigida">${escapeHtml(t.correctFitId)}</span>`
+        : dash;
       return `
         <tr class="${rowClass}">
           <td class="px-2 py-3 text-center">
@@ -1280,6 +1400,9 @@ function renderTable() {
           </td>
           <td class="px-3 py-3 text-sm text-gray-800 dark:text-slate-200 max-w-md">${escapeHtml(t.description)}</td>
           <td class="px-3 py-3 text-sm text-gray-700 dark:text-slate-300">${cpDisplay}</td>
+          <td class="px-3 py-3 text-xs whitespace-nowrap">${reversalReasonCell}</td>
+          <td class="px-3 py-3 text-sm">${reversalRecipientCell}</td>
+          <td class="px-3 py-3 text-xs">${correctFitCell}</td>
           <td class="px-3 py-3 text-xs text-gray-500 dark:text-slate-400 font-mono">${escapeHtml(t.id || '-')}</td>
           <td class="px-3 py-3 text-sm font-semibold text-right whitespace-nowrap ${valueClass}">
             ${sign} ${formatCurrency(t.absAmount)}
@@ -1313,8 +1436,19 @@ function renderTable() {
                  <span class="${t.balanceAfter >= 0 ? 'text-gray-700 dark:text-slate-200 font-semibold' : 'text-red-600 dark:text-red-400 font-semibold'}">${formatCurrency(t.balanceAfter)}</span>
                </div>`
             : '';
+        // Bloco extra de detalhes do estorno (mobile)
+        const reversalDetails = t.isReversal
+          ? `<div class="mt-1 p-2 bg-amber-50 dark:bg-amber-900/20 rounded border border-amber-200 dark:border-amber-800 text-[11px] space-y-0.5">
+               <div class="text-amber-800 dark:text-amber-200 font-semibold">
+                 <i class="fas fa-undo mr-1"></i>${escapeHtml(t.reversalReason || 'Estorno')}
+               </div>
+               ${t.reversalRecipient ? `<div class="text-amber-700 dark:text-amber-300"><span class="text-amber-600 dark:text-amber-400">Destinatário:</span> ${escapeHtml(t.reversalRecipient)}</div>` : ''}
+               ${t.correctFitId ? `<div class="text-amber-700 dark:text-amber-300 font-mono"><span class="text-amber-600 dark:text-amber-400 font-sans">FITID Original:</span> ${escapeHtml(t.correctFitId)}</div>` : ''}
+             </div>`
+          : '';
+        const cardBaseClass = t.isReversal && !isSelected ? 'bg-amber-50/30 dark:bg-amber-900/5' : '';
         return `
-          <div class="p-3 space-y-1 ${cardClass}">
+          <div class="p-3 space-y-1 ${cardClass || cardBaseClass}">
             <div class="flex items-start justify-between gap-2">
               <label class="flex items-start gap-2 flex-1 cursor-pointer">
                 <input type="checkbox" class="row-checkbox mt-1 rounded border-gray-300 dark:border-slate-500 text-blue-600 focus:ring-blue-500" data-id="${escapeHtml(t.id)}" ${isSelected ? 'checked' : ''} />
@@ -1334,6 +1468,7 @@ function renderTable() {
             <div class="text-sm text-gray-800 dark:text-slate-100 break-words">${escapeHtml(t.description)}</div>
             ${t.counterparty ? `<div class="text-xs text-gray-600 dark:text-slate-300"><span class="text-gray-400 dark:text-slate-500">${cpLabel}:</span> ${escapeHtml(t.counterparty)}</div>` : ''}
             ${balanceLine}
+            ${reversalDetails}
             ${t.id ? `<div class="text-[11px] text-gray-400 dark:text-slate-500 font-mono">TxId: ${escapeHtml(t.id)}</div>` : ''}
           </div>
         `;
@@ -1645,42 +1780,241 @@ function renderChart() {
 }
 
 // ============================================================
-// EXPORTAÇÃO CSV
+// EXPORTAÇÃO - MODAL DE PRÉVIA
 // ============================================================
-function exportCSV() {
-  // Se há seleção, exporta apenas os selecionados; senão, todos os filtrados
-  const source =
-    state.selectedIds.size > 0
-      ? state.filtered.filter((t) => state.selectedIds.has(t.id))
-      : state.filtered;
+/**
+ * Colunas exportadas em CSV/PDF. Centralizadas para consistência entre
+ * a prévia do modal e o arquivo final.
+ */
+const EXPORT_COLUMNS = [
+  'Data/Hora',
+  'Tipo',
+  'Descrição',
+  'Conta Destino/Origem',
+  'Motivo Estorno',
+  'Destinatário Estorno',
+  'FITID Original',
+  'TxId',
+  'Valor',
+  'Saldo Antes',
+  'Saldo Após',
+];
+
+/** Monta uma linha de exportação a partir de uma transação */
+function buildExportRow(t) {
+  return [
+    formatDateTime(t.date),
+    getTrnTypeLabel(t.trnType) + (t.isReversal ? ' (Estorno)' : ''),
+    t.description || '',
+    t.counterparty || '',
+    t.isReversal ? (t.reversalReason || 'Estorno') : '',
+    t.isReversal ? (t.reversalRecipient || '') : '',
+    t.isReversal ? (t.correctFitId || '') : '',
+    t.id || '',
+    (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount),
+    t.balanceBefore != null ? formatCurrency(t.balanceBefore) : '',
+    t.balanceAfter != null ? formatCurrency(t.balanceAfter) : '',
+  ];
+}
+
+/** Retorna a fonte de dados para exportação: seleção OU tudo que está filtrado */
+function getExportSource() {
+  return state.selectedIds.size > 0
+    ? state.filtered.filter((t) => state.selectedIds.has(t.id))
+    : state.filtered;
+}
+
+/**
+ * Abre o modal de prévia da exportação.
+ * @param {string} format - 'pdf' ou 'csv'
+ */
+function openExportPreview(format) {
+  const source = getExportSource();
   if (source.length === 0) {
-    alert('Nenhuma transação para exportar.');
+    alert('Nenhuma transação para exportar. Ajuste os filtros ou selecione ao menos uma linha.');
     return;
   }
-  const headers = [
-    'Data/Hora',
-    'Tipo',
-    'Descrição',
-    'Conta Destino/Origem',
-    'TxId',
-    'Valor',
-    'Saldo Antes',
-    'Saldo Após',
-    'Estorno',
-  ];
+
+  const modal = document.getElementById('export-preview-modal');
+  const title = document.getElementById('export-modal-title');
+  const subtitle = document.getElementById('export-modal-subtitle');
+  const icon = document.getElementById('export-modal-icon');
+  const confirmLabel = document.getElementById('export-modal-confirm-label');
+  const confirmBtn = document.getElementById('export-modal-confirm');
+  const hint = document.getElementById('preview-footer-hint');
+
+  // Configura visual conforme formato
+  if (format === 'pdf') {
+    title.textContent = 'Prévia — Relatório PDF';
+    subtitle.textContent = 'Confira o conteúdo antes de gerar o arquivo PDF';
+    icon.className = 'fas fa-file-pdf text-2xl';
+    confirmLabel.textContent = 'Gerar PDF';
+    confirmBtn.className =
+      'px-4 py-2 rounded-lg text-sm font-semibold text-white transition bg-red-600 hover:bg-red-700';
+    hint.textContent = 'O PDF será baixado após confirmar. Layout otimizado A4 paisagem.';
+  } else {
+    title.textContent = 'Prévia — Planilha CSV';
+    subtitle.textContent = 'Confira o conteúdo antes de gerar o arquivo CSV';
+    icon.className = 'fas fa-file-csv text-2xl';
+    confirmLabel.textContent = 'Baixar CSV';
+    confirmBtn.className =
+      'px-4 py-2 rounded-lg text-sm font-semibold text-white transition bg-green-600 hover:bg-green-700';
+    hint.textContent = 'CSV separado por ponto-e-vírgula com BOM UTF-8 (Excel-compatível).';
+  }
+
+  // Metadados
+  const credits = source.filter((t) => t.type === 'credit');
+  const debits = source.filter((t) => t.type === 'debit');
+  const totalCredit = credits.reduce((s, t) => s + t.amount, 0);
+  const totalDebit = debits.reduce((s, t) => s + t.absAmount, 0);
+  const balance = totalCredit - totalDebit;
+  const reversalCount = source.filter((t) => t.isReversal).length;
+
+  document.getElementById('preview-meta-count').textContent =
+    `${source.length} ${reversalCount > 0 ? `(${reversalCount} estornos)` : ''}`;
+  document.getElementById('preview-meta-credits').textContent =
+    `${formatCurrency(totalCredit)} · ${credits.length}`;
+  document.getElementById('preview-meta-debits').textContent =
+    `${formatCurrency(totalDebit)} · ${debits.length}`;
+  const balanceEl = document.getElementById('preview-meta-balance');
+  balanceEl.textContent = formatCurrency(balance);
+  balanceEl.className =
+    'font-bold ' + (balance >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400');
+
+  // Corpo: tabela com prévia (mostra até 50 primeiras linhas)
+  const previewBody = document.getElementById('preview-body');
+  const previewLimit = 50;
+  const preview = source.slice(0, previewLimit);
+  const overflow = source.length - preview.length;
+
+  const info = state.accountInfo;
+  const filtersApplied = collectAppliedFilters();
+
+  const filtersHtml = filtersApplied.length
+    ? `<div class="mb-3 p-3 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-lg text-xs">
+         <div class="font-semibold text-blue-800 dark:text-blue-200 mb-1"><i class="fas fa-filter mr-1"></i>Filtros aplicados</div>
+         <div class="text-blue-700 dark:text-blue-300">${filtersApplied.map(escapeHtml).join(' &nbsp;·&nbsp; ')}</div>
+       </div>`
+    : '';
+
+  const accountHtml = `
+    <div class="mb-3 p-3 bg-gray-50 dark:bg-slate-900/50 border border-gray-200 dark:border-slate-700 rounded-lg text-xs grid grid-cols-2 sm:grid-cols-3 gap-2">
+      <div><span class="text-gray-500 dark:text-slate-400">Banco:</span> <strong class="text-gray-800 dark:text-slate-100">${escapeHtml(info.bankId || '-')}</strong></div>
+      <div><span class="text-gray-500 dark:text-slate-400">Agência:</span> <strong class="text-gray-800 dark:text-slate-100">${escapeHtml(info.branchId || '-')}</strong></div>
+      <div><span class="text-gray-500 dark:text-slate-400">Conta:</span> <strong class="text-gray-800 dark:text-slate-100">${escapeHtml(info.accountId || '-')}</strong></div>
+      <div><span class="text-gray-500 dark:text-slate-400">Período:</span> <strong class="text-gray-800 dark:text-slate-100">${formatDate(info.startDate)} → ${formatDate(info.endDate)}</strong></div>
+      <div><span class="text-gray-500 dark:text-slate-400">Saldo:</span> <strong class="text-indigo-600 dark:text-indigo-400">${formatCurrency(info.balance)}</strong></div>
+      <div><span class="text-gray-500 dark:text-slate-400">Gerado em:</span> <strong class="text-gray-800 dark:text-slate-100">${new Date().toLocaleString('pt-BR')}</strong></div>
+    </div>
+  `;
+
+  const tableRows = preview
+    .map((t) => {
+      const row = buildExportRow(t);
+      const cls = t.isReversal ? 'reversal-row' : '';
+      const valueColor = t.type === 'credit'
+        ? 'color:#16a34a;font-weight:600'
+        : 'color:#dc2626;font-weight:600';
+      return `<tr class="${cls}">
+        ${row
+          .map((cell, i) => {
+            const style = i === 8 ? `style="${valueColor};white-space:nowrap"` : '';
+            const nowrap = (i === 0 || i === 9 || i === 10) ? 'style="white-space:nowrap"' : '';
+            return `<td ${style || nowrap}>${escapeHtml(String(cell))}</td>`;
+          })
+          .join('')}
+      </tr>`;
+    })
+    .join('');
+
+  const overflowNotice = overflow > 0
+    ? `<div class="mt-2 p-2 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded text-xs text-amber-800 dark:text-amber-200 text-center">
+         <i class="fas fa-info-circle mr-1"></i>
+         Prévia exibindo as primeiras <strong>${previewLimit}</strong> linhas. O arquivo exportado conterá <strong>todas as ${source.length}</strong> transações.
+       </div>`
+    : '';
+
+  previewBody.innerHTML = `
+    ${accountHtml}
+    ${filtersHtml}
+    <div class="overflow-auto border border-gray-200 dark:border-slate-700 rounded-lg" style="max-height:50vh">
+      <table>
+        <thead>
+          <tr>${EXPORT_COLUMNS.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>
+    ${overflowNotice}
+  `;
+
+  // Configura ação do botão de confirmar
+  confirmBtn.onclick = () => {
+    closeExportPreview();
+    if (format === 'pdf') doExportPDF();
+    else doExportCSV();
+  };
+
+  modal.classList.remove('hidden');
+  // Foco no botão de fechar (acessibilidade)
+  document.getElementById('export-modal-close').focus();
+}
+
+function closeExportPreview() {
+  const modal = document.getElementById('export-preview-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+/** Retorna lista legível de filtros aplicados atualmente */
+function collectAppliedFilters() {
+  const list = [];
+  if (filterType.value !== 'all') {
+    list.push(`Tipo: ${filterType.value === 'credit' ? 'Somente créditos' : 'Somente débitos'}`);
+  }
+  if (filterStart.value) list.push(`De: ${new Date(filterStart.value).toLocaleString('pt-BR')}`);
+  if (filterEnd.value) list.push(`Até: ${new Date(filterEnd.value).toLocaleString('pt-BR')}`);
+  if (filterSearch.value) list.push(`Busca: "${filterSearch.value}"`);
+  if (filterCounterparty.value) list.push(`Conta: ${filterCounterparty.value}`);
+  if (filterMin.value) list.push(`Mín: ${filterMin.value}`);
+  if (filterMax.value) list.push(`Máx: ${filterMax.value}`);
+  const reversalEl = document.getElementById('filter-reversal');
+  if (reversalEl && reversalEl.value === 'only') list.push('Somente estornos');
+  if (reversalEl && reversalEl.value === 'exclude') list.push('Sem estornos');
+  if (state.reversalOnlyMode) list.push('Botão exclusivo: apenas estornos');
+  if (state.selectedIds.size > 0) list.push(`Seleção manual: ${state.selectedIds.size} linha(s)`);
+  return list;
+}
+
+// ============================================================
+// EXPORTAÇÃO CSV — abre modal de prévia
+// ============================================================
+function exportCSV() {
+  openExportPreview('csv');
+}
+
+/** Executa a exportação CSV de fato (chamado pelo modal) */
+function doExportCSV() {
+  const source = getExportSource();
+  if (source.length === 0) return;
+
+  // Para CSV: valores numéricos em formato BR (com vírgula) mas sem prefixo +/-
+  // (já temos coluna "Tipo" para indicar crédito/débito).
   const rows = source.map((t) => [
     formatDateTime(t.date),
-    getTrnTypeLabel(t.trnType),
-    t.description.replace(/"/g, '""'),
+    getTrnTypeLabel(t.trnType) + (t.isReversal ? ' (Estorno)' : ''),
+    (t.description || '').replace(/"/g, '""'),
     (t.counterparty || '').replace(/"/g, '""'),
+    t.isReversal ? (t.reversalReason || 'Estorno') : '',
+    t.isReversal ? (t.reversalRecipient || '').replace(/"/g, '""') : '',
+    t.isReversal ? (t.correctFitId || '') : '',
     t.id || '',
     t.amount.toFixed(2).replace('.', ','),
     t.balanceBefore != null ? t.balanceBefore.toFixed(2).replace('.', ',') : '',
     t.balanceAfter != null ? t.balanceAfter.toFixed(2).replace('.', ',') : '',
-    t.isReversal ? t.reversalReason || 'Sim' : '',
   ]);
+
   const csv = [
-    headers.join(';'),
+    EXPORT_COLUMNS.join(';'),
     ...rows.map((r) => r.map((c) => `"${c}"`).join(';')),
   ].join('\n');
 
@@ -1697,27 +2031,25 @@ function exportCSV() {
 }
 
 // ============================================================
-// EXPORTAÇÃO PDF
+// EXPORTAÇÃO PDF — abre modal de prévia
 // ============================================================
-/**
- * Gera relatório PDF do extrato com:
- *  - Cabeçalho (informações da conta)
- *  - Resumo estatístico (créditos, débitos, saldo, ticket médio)
- *  - Filtros aplicados
- *  - Tabela de transações
- *  - Total filtrado no rodapé
- * Usa jsPDF + autotable (carregados via CDN).
- */
 function exportPDF() {
-  // Se há seleção, exporta apenas os selecionados
-  const source =
-    state.selectedIds.size > 0
-      ? state.filtered.filter((t) => state.selectedIds.has(t.id))
-      : state.filtered;
-  if (source.length === 0) {
-    alert('Nenhuma transação para exportar.');
-    return;
-  }
+  openExportPreview('pdf');
+}
+
+/**
+ * Executa a exportação PDF de fato (chamado pelo modal).
+ * Layout profissional com:
+ *  - Cabeçalho colorido com título e logo textual
+ *  - Bloco de informações da conta
+ *  - Bloco de filtros aplicados
+ *  - Painel de resumo estatístico com cards coloridos
+ *  - Tabela de transações com destaque de estornos
+ *  - Rodapé com paginação e marca d'água
+ */
+function doExportPDF() {
+  const source = getExportSource();
+  if (source.length === 0) return;
   if (typeof window.jspdf === 'undefined' || !window.jspdf.jsPDF) {
     alert('Biblioteca de PDF não carregada. Recarregue a página e tente novamente.');
     return;
@@ -1725,79 +2057,217 @@ function exportPDF() {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
-
-  // Cabeçalho
-  doc.setFontSize(16);
-  doc.setFont('helvetica', 'bold');
-  doc.text('Relatório de Extrato Bancário', pageWidth / 2, 15, { align: 'center' });
-
+  const pageHeight = doc.internal.pageSize.getHeight();
   const info = state.accountInfo;
-  doc.setFontSize(9);
+  const margin = 12;
+
+  // Paleta de cores profissional (RGB)
+  const COL = {
+    primary: [30, 58, 138],        // indigo-900
+    primaryLight: [67, 97, 238],   // indigo-500
+    accent: [37, 99, 235],         // blue-600
+    green: [22, 163, 74],
+    red: [220, 38, 38],
+    amber: [217, 119, 6],
+    slate900: [15, 23, 42],
+    slate700: [51, 65, 85],
+    slate500: [100, 116, 139],
+    slate400: [148, 163, 184],
+    slate100: [241, 245, 249],
+    slate50: [248, 250, 252],
+    white: [255, 255, 255],
+    reversalBg: [254, 243, 199],   // amber-100
+  };
+
+  // ==========================================================================
+  // CABEÇALHO PROFISSIONAL (banner colorido)
+  // ==========================================================================
+  const headerH = 24;
+  doc.setFillColor(...COL.primary);
+  doc.rect(0, 0, pageWidth, headerH, 'F');
+  // Faixa mais clara para dar profundidade
+  doc.setFillColor(...COL.primaryLight);
+  doc.rect(0, headerH - 3, pageWidth, 3, 'F');
+
+  // Título
+  doc.setTextColor(...COL.white);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(18);
+  doc.text('Relatório de Extrato Bancário', margin, 12);
+
+  // Subtítulo
   doc.setFont('helvetica', 'normal');
-  const accountLines = [
-    `Banco: ${info.bankId || '-'}   Agência: ${info.branchId || '-'}   Conta: ${info.accountId || '-'} (${getAccountTypeLabel(info.accountType)})`,
-    `Período: ${formatDate(info.startDate)} até ${formatDate(info.endDate)}   Saldo: ${formatCurrency(info.balance)} em ${formatDate(info.balanceDate)}`,
-    `Gerado em: ${new Date().toLocaleString('pt-BR')}`,
+  doc.setFontSize(9);
+  doc.setTextColor(219, 234, 254); // blue-100
+  doc.text('Análise detalhada de transações · Processado localmente', margin, 18);
+
+  // Data à direita
+  doc.setFontSize(9);
+  doc.setTextColor(...COL.white);
+  const genDate = new Date().toLocaleString('pt-BR');
+  doc.text(`Gerado em: ${genDate}`, pageWidth - margin, 12, { align: 'right' });
+  doc.setFontSize(7);
+  doc.setTextColor(219, 234, 254);
+  doc.text('Leitor OFX', pageWidth - margin, 18, { align: 'right' });
+
+  // ==========================================================================
+  // INFO DA CONTA - card com borda
+  // ==========================================================================
+  let y = headerH + 6;
+  const cardH = 20;
+  doc.setDrawColor(...COL.slate400);
+  doc.setLineWidth(0.2);
+  doc.setFillColor(...COL.slate50);
+  doc.roundedRect(margin, y, pageWidth - 2 * margin, cardH, 1.5, 1.5, 'FD');
+
+  doc.setTextColor(...COL.slate700);
+  doc.setFontSize(7);
+  doc.setFont('helvetica', 'bold');
+  doc.text('INFORMAÇÕES DA CONTA', margin + 3, y + 4);
+
+  // Grid de 4 colunas
+  const cols = [
+    { label: 'Banco', value: info.bankId || '-' },
+    { label: 'Agência', value: info.branchId || '-' },
+    { label: 'Conta', value: `${info.accountId || '-'} (${getAccountTypeLabel(info.accountType)})` },
+    { label: 'Período', value: `${formatDate(info.startDate)} → ${formatDate(info.endDate)}` },
+    { label: 'Saldo em ' + formatDate(info.balanceDate), value: formatCurrency(info.balance) },
+    { label: 'Moeda', value: info.currency || 'BRL' },
+    { label: 'Total no extrato', value: `${state.transactions.length} transações` },
+    { label: 'No relatório', value: `${source.length} transações` },
   ];
-  let y = 22;
-  accountLines.forEach((l) => {
-    doc.text(l, 14, y);
-    y += 5;
-  });
-
-  // Filtros aplicados
-  const filters = [];
-  if (filterType.value !== 'all') {
-    filters.push(`Tipo: ${filterType.value === 'credit' ? 'Somente créditos' : 'Somente débitos'}`);
-  }
-  if (filterStart.value) filters.push(`De: ${new Date(filterStart.value).toLocaleString('pt-BR')}`);
-  if (filterEnd.value) filters.push(`Até: ${new Date(filterEnd.value).toLocaleString('pt-BR')}`);
-  if (filterSearch.value) filters.push(`Busca: "${filterSearch.value}"`);
-  if (filterCounterparty.value) filters.push(`Conta: ${filterCounterparty.value}`);
-  if (filterMin.value) filters.push(`Mín: ${filterMin.value}`);
-  if (filterMax.value) filters.push(`Máx: ${filterMax.value}`);
-  const reversalEl = document.getElementById('filter-reversal');
-  if (reversalEl && reversalEl.value === 'only') filters.push('Somente estornos');
-  if (reversalEl && reversalEl.value === 'exclude') filters.push('Sem estornos');
-  if (filters.length) {
-    doc.setFont('helvetica', 'bold');
-    doc.text('Filtros: ', 14, y);
+  const colWidth = (pageWidth - 2 * margin - 6) / 4;
+  cols.forEach((c, i) => {
+    const col = i % 4;
+    const row = Math.floor(i / 4);
+    const cx = margin + 3 + col * colWidth;
+    const cy = y + 9 + row * 6;
     doc.setFont('helvetica', 'normal');
-    const filtersText = filters.join('  |  ');
-    const split = doc.splitTextToSize(filtersText, pageWidth - 40);
-    doc.text(split, 30, y);
-    y += 5 * split.length;
+    doc.setFontSize(6.5);
+    doc.setTextColor(...COL.slate500);
+    doc.text(c.label.toUpperCase(), cx, cy);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(...COL.slate900);
+    const truncated = doc.splitTextToSize(String(c.value), colWidth - 2)[0];
+    doc.text(truncated, cx, cy + 3.5);
+  });
+  y += cardH + 4;
+
+  // ==========================================================================
+  // FILTROS APLICADOS (se houver)
+  // ==========================================================================
+  const filters = collectAppliedFilters();
+  if (filters.length > 0) {
+    const filtersText = filters.join('  ·  ');
+    const wrapped = doc.splitTextToSize(filtersText, pageWidth - 2 * margin - 22);
+    const filterH = 6 + wrapped.length * 3.5;
+    doc.setFillColor(239, 246, 255); // blue-50
+    doc.setDrawColor(191, 219, 254); // blue-200
+    doc.roundedRect(margin, y, pageWidth - 2 * margin, filterH, 1.5, 1.5, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7);
+    doc.setTextColor(...COL.accent);
+    doc.text('FILTROS APLICADOS', margin + 3, y + 3.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(...COL.slate700);
+    doc.text(wrapped, margin + 3, y + 7);
+    y += filterH + 3;
   }
 
-  // Estatísticas (baseadas em source: seleção OU filtrados)
+  // ==========================================================================
+  // RESUMO ESTATÍSTICO - 5 cards
+  // ==========================================================================
   const credits = source.filter((t) => t.type === 'credit');
   const debits = source.filter((t) => t.type === 'debit');
   const totalCredit = credits.reduce((s, t) => s + t.amount, 0);
   const totalDebit = debits.reduce((s, t) => s + t.absAmount, 0);
   const balance = totalCredit - totalDebit;
   const reversalCount = source.filter((t) => t.isReversal).length;
+  const totalReversal = source
+    .filter((t) => t.isReversal)
+    .reduce((s, t) => s + t.absAmount, 0);
 
-  y += 2;
-  doc.setFont('helvetica', 'bold');
-  const scopeLabel = state.selectedIds.size > 0 ? 'Resumo (seleção):' : 'Resumo:';
-  doc.text(scopeLabel, 14, y);
-  doc.setFont('helvetica', 'normal');
-  const stats = [
-    `Transações: ${source.length}`,
-    `Créditos: ${formatCurrency(totalCredit)} (${credits.length})`,
-    `Débitos: ${formatCurrency(totalDebit)} (${debits.length})`,
-    `Saldo: ${formatCurrency(balance)}`,
+  const summaryCards = [
+    { label: 'Transações', value: String(source.length), color: COL.slate700, accent: COL.accent },
+    { label: 'Créditos', value: formatCurrency(totalCredit), sub: `${credits.length} entradas`, color: COL.green, accent: COL.green },
+    { label: 'Débitos', value: formatCurrency(totalDebit), sub: `${debits.length} saídas`, color: COL.red, accent: COL.red },
+    { label: 'Saldo do Período', value: formatCurrency(balance), color: balance >= 0 ? COL.green : COL.red, accent: COL.primary },
   ];
-  if (reversalCount > 0) stats.push(`Estornos: ${reversalCount}`);
-  doc.text(stats.join('   |   '), 40, y);
-  y += 6;
+  if (reversalCount > 0) {
+    summaryCards.push({
+      label: 'Estornos',
+      value: formatCurrency(totalReversal),
+      sub: `${reversalCount} operações`,
+      color: COL.amber,
+      accent: COL.amber,
+    });
+  }
 
-  // Tabela de transações
+  const cardH2 = 14;
+  const cardW = (pageWidth - 2 * margin - (summaryCards.length - 1) * 2) / summaryCards.length;
+  summaryCards.forEach((c, i) => {
+    const cx = margin + i * (cardW + 2);
+    // Fundo branco com borda
+    doc.setFillColor(...COL.white);
+    doc.setDrawColor(...COL.slate400);
+    doc.roundedRect(cx, y, cardW, cardH2, 1, 1, 'FD');
+    // Barra colorida esquerda
+    doc.setFillColor(...c.accent);
+    doc.rect(cx, y, 1.2, cardH2, 'F');
+    // Label
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6);
+    doc.setTextColor(...COL.slate500);
+    doc.text(c.label.toUpperCase(), cx + 3, y + 3.5);
+    // Valor
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(...c.color);
+    const valueText = doc.splitTextToSize(c.value, cardW - 4)[0];
+    doc.text(valueText, cx + 3, y + 8.5);
+    // Sub
+    if (c.sub) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6);
+      doc.setTextColor(...COL.slate400);
+      doc.text(c.sub, cx + 3, y + 12);
+    }
+  });
+  y += cardH2 + 5;
+
+  // ==========================================================================
+  // TÍTULO DA TABELA
+  // ==========================================================================
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(...COL.slate900);
+  const scopeLabel = state.selectedIds.size > 0 ? 'Transações Selecionadas' : 'Detalhamento das Transações';
+  doc.text(scopeLabel, margin, y);
+  // Linha separadora
+  doc.setDrawColor(...COL.primary);
+  doc.setLineWidth(0.4);
+  doc.line(margin, y + 1.5, pageWidth - margin, y + 1.5);
+  y += 4;
+
+  // ==========================================================================
+  // TABELA DE TRANSAÇÕES
+  // ==========================================================================
+  // Headers e rows com colunas de estorno
+  const head = [[
+    'Data/Hora', 'Tipo', 'Descrição', 'Contraparte',
+    'Motivo Estorno', 'Destinatário', 'FITID Orig.',
+    'TxId', 'Valor', 'Saldo Antes', 'Saldo Após'
+  ]];
   const rows = source.map((t) => [
     formatDateTime(t.date),
-    getTrnTypeLabel(t.trnType) + (t.isReversal ? ' (Estorno)' : ''),
-    t.description,
+    getTrnTypeLabel(t.trnType) + (t.isReversal ? ' *' : ''),
+    t.description || '',
     t.counterparty || '-',
+    t.isReversal ? (t.reversalReason || 'Estorno') : '',
+    t.isReversal ? (t.reversalRecipient || '') : '',
+    t.isReversal ? (t.correctFitId || '') : '',
     t.id || '-',
     (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount),
     t.balanceBefore != null ? formatCurrency(t.balanceBefore) : '-',
@@ -1806,67 +2276,147 @@ function exportPDF() {
 
   doc.autoTable({
     startY: y,
-    head: [['Data/Hora', 'Tipo', 'Descrição', 'Conta Destino/Origem', 'TxId', 'Valor', 'Saldo Antes', 'Saldo Após']],
+    head,
     body: rows,
-    styles: { fontSize: 6.5, cellPadding: 1.3, overflow: 'linebreak' },
-    headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold', fontSize: 7 },
-    alternateRowStyles: { fillColor: [248, 250, 252] },
+    margin: { left: margin, right: margin, bottom: 14 },
+    styles: {
+      fontSize: 6,
+      cellPadding: 1.2,
+      overflow: 'linebreak',
+      lineColor: COL.slate400,
+      lineWidth: 0.05,
+      textColor: COL.slate900,
+    },
+    headStyles: {
+      fillColor: COL.primary,
+      textColor: COL.white,
+      fontStyle: 'bold',
+      fontSize: 6.5,
+      halign: 'left',
+      cellPadding: 1.8,
+      lineColor: COL.primary,
+    },
+    alternateRowStyles: { fillColor: COL.slate50 },
     columnStyles: {
-      0: { cellWidth: 28 },
-      1: { cellWidth: 30 },
-      2: { cellWidth: 'auto' },
-      3: { cellWidth: 45 },
-      4: { cellWidth: 22 },
-      5: { cellWidth: 24, halign: 'right', fontStyle: 'bold' },
-      6: { cellWidth: 24, halign: 'right' },
-      7: { cellWidth: 24, halign: 'right', fontStyle: 'bold' },
+      0: { cellWidth: 22 },                        // Data
+      1: { cellWidth: 18 },                        // Tipo
+      2: { cellWidth: 'auto' },                    // Descrição
+      3: { cellWidth: 32 },                        // Contraparte
+      4: { cellWidth: 18 },                        // Motivo Estorno
+      5: { cellWidth: 26 },                        // Destinatário
+      6: { cellWidth: 20, font: 'courier', fontSize: 5.5 }, // FITID Original
+      7: { cellWidth: 20, font: 'courier', fontSize: 5.5 }, // TxId
+      8: { cellWidth: 22, halign: 'right', fontStyle: 'bold' }, // Valor
+      9: { cellWidth: 20, halign: 'right' },       // Saldo Antes
+      10: { cellWidth: 22, halign: 'right', fontStyle: 'bold' }, // Saldo Após
     },
     didParseCell: (data) => {
-      if (data.section === 'body' && data.column.index === 5) {
-        const value = source[data.row.index].amount;
-        data.cell.styles.textColor = value >= 0 ? [22, 163, 74] : [220, 38, 38];
+      if (data.section !== 'body') return;
+      const t = source[data.row.index];
+      // Estornos: fundo amber suave em toda a linha
+      if (t && t.isReversal) {
+        data.cell.styles.fillColor = COL.reversalBg;
       }
-      // Saldo após negativo em vermelho
-      if (data.section === 'body' && data.column.index === 7) {
-        const bal = source[data.row.index].balanceAfter;
-        if (bal != null && bal < 0) data.cell.styles.textColor = [220, 38, 38];
+      // Coluna VALOR: verde ou vermelho
+      if (data.column.index === 8) {
+        data.cell.styles.textColor = t.amount >= 0 ? COL.green : COL.red;
+      }
+      // Saldo após negativo: vermelho
+      if (data.column.index === 10 && t.balanceAfter != null && t.balanceAfter < 0) {
+        data.cell.styles.textColor = COL.red;
+      }
+      // Motivo Estorno: amber
+      if (data.column.index === 4 && t.isReversal) {
+        data.cell.styles.textColor = COL.amber;
+        data.cell.styles.fontStyle = 'bold';
+      }
+      // Destinatário Estorno: amber escuro
+      if (data.column.index === 5 && t.isReversal && t.reversalRecipient) {
+        data.cell.styles.textColor = [146, 64, 14]; // amber-800
+        data.cell.styles.fontStyle = 'bold';
       }
     },
     didDrawPage: (data) => {
+      // Repete o cabeçalho colorido em cada página (mais profissional)
+      if (data.pageNumber > 1) {
+        doc.setFillColor(...COL.primary);
+        doc.rect(0, 0, pageWidth, 10, 'F');
+        doc.setTextColor(...COL.white);
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Relatório de Extrato Bancário', margin, 6.5);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.text(genDate, pageWidth - margin, 6.5, { align: 'right' });
+      }
       // Rodapé com paginação
       const pageCount = doc.internal.getNumberOfPages();
-      doc.setFontSize(8);
-      doc.setTextColor(120);
+      doc.setDrawColor(...COL.slate400);
+      doc.setLineWidth(0.2);
+      doc.line(margin, pageHeight - 11, pageWidth - margin, pageHeight - 11);
+      doc.setFontSize(7);
+      doc.setTextColor(...COL.slate500);
+      doc.setFont('helvetica', 'normal');
+      doc.text('Leitor OFX · Processado 100% localmente no navegador', margin, pageHeight - 6);
+      doc.setFont('helvetica', 'bold');
       doc.text(
         `Página ${data.pageNumber} de ${pageCount}`,
-        pageWidth - 14,
-        doc.internal.pageSize.getHeight() - 8,
+        pageWidth - margin,
+        pageHeight - 6,
         { align: 'right' }
-      );
-      doc.text(
-        'Leitor OFX · Processado 100% localmente',
-        14,
-        doc.internal.pageSize.getHeight() - 8
       );
     },
   });
 
-  // Total filtrado ao final
-  let endY = doc.lastAutoTable.finalY + 6;
-  if (endY > doc.internal.pageSize.getHeight() - 20) {
+  // ==========================================================================
+  // TOTAL FINAL - card destacado
+  // ==========================================================================
+  let endY = doc.lastAutoTable.finalY + 4;
+  const totalCardH = 12;
+  if (endY + totalCardH > pageHeight - 15) {
     doc.addPage();
-    endY = 20;
+    endY = 15;
   }
-  doc.setFontSize(10);
+  const totalCardW = 90;
+  const totalCardX = pageWidth - margin - totalCardW;
+  const totalColor = balance >= 0 ? COL.green : COL.red;
+  doc.setFillColor(...COL.slate900);
+  doc.roundedRect(totalCardX, endY, totalCardW, totalCardH, 1.5, 1.5, 'F');
+  // Barra colorida à esquerda
+  doc.setFillColor(...totalColor);
+  doc.rect(totalCardX, endY, 2, totalCardH, 'F');
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor(...COL.slate400);
+  const totalLabel = state.selectedIds.size > 0
+    ? `TOTAL DA SELEÇÃO (${source.length})`
+    : `TOTAL FILTRADO (${source.length} transações)`;
+  doc.text(totalLabel, totalCardX + 4, endY + 4);
   doc.setFont('helvetica', 'bold');
-  doc.setTextColor(0);
-  const totalLabel =
-    state.selectedIds.size > 0
-      ? `Total da seleção (${source.length}):`
-      : 'Total filtrado:';
-  doc.text(totalLabel, pageWidth - 60, endY, { align: 'right' });
-  doc.setTextColor(balance >= 0 ? 22 : 220, balance >= 0 ? 163 : 38, balance >= 0 ? 74 : 38);
-  doc.text(formatCurrency(balance), pageWidth - 14, endY, { align: 'right' });
+  doc.setFontSize(13);
+  doc.setTextColor(...(balance >= 0 ? [34, 197, 94] : [248, 113, 113]));
+  doc.text(formatCurrency(balance), totalCardX + totalCardW - 3, endY + 9, { align: 'right' });
+
+  // ==========================================================================
+  // LEGENDA (se houver estornos)
+  // ==========================================================================
+  if (reversalCount > 0) {
+    let legY = endY + totalCardH + 4;
+    if (legY > pageHeight - 15) {
+      doc.addPage();
+      legY = 15;
+    }
+    doc.setFillColor(...COL.reversalBg);
+    doc.rect(margin, legY, 4, 4, 'F');
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...COL.slate500);
+    doc.text(
+      'Linhas em destaque amarelo indicam transações de estorno/devolução. O asterisco (*) na coluna Tipo confirma o estorno.',
+      margin + 6,
+      legY + 3
+    );
+  }
 
   doc.save(`extrato_${formatDateISO(new Date())}.pdf`);
 }
@@ -1881,10 +2431,17 @@ function exportPDF() {
 function setTheme(theme) {
   const isDark = theme === 'dark';
   // Aplica a classe .dark no elemento raiz — Tailwind foi configurado com darkMode:'class'
-  document.documentElement.classList.toggle('dark', isDark);
+  // Uso explícito de add/remove (em vez de toggle) para garantir consistência
+  if (isDark) {
+    document.documentElement.classList.add('dark');
+  } else {
+    document.documentElement.classList.remove('dark');
+  }
   try {
     localStorage.setItem('theme', theme);
-  } catch (e) {}
+  } catch (e) {
+    console.warn('localStorage não disponível:', e);
+  }
   const icon = document.getElementById('theme-icon');
   if (icon) {
     // No modo escuro mostra o sol (para voltar ao claro); no claro mostra a lua
@@ -1916,18 +2473,56 @@ function initTheme() {
 
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
-  const toggle = document.getElementById('theme-toggle');
-  if (toggle) {
-    toggle.addEventListener('click', () => {
+
+  // === Botão de tema (claro/escuro) ===
+  // Usa event delegation para robustez: qualquer clique dentro do botão
+  // (incluindo no ícone <i>) dispara a troca de tema.
+  const themeToggle = document.getElementById('theme-toggle');
+  if (themeToggle) {
+    themeToggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       const isDark = document.documentElement.classList.contains('dark');
       setTheme(isDark ? 'light' : 'dark');
     });
   }
-  // Wire PDF button
+
+  // === Botão de exportação PDF (abre modal de prévia) ===
+  // Botão CSV é conectado em setupFilters() (após carregar OFX)
   const pdfBtn = document.getElementById('export-pdf');
   if (pdfBtn) pdfBtn.addEventListener('click', exportPDF);
 
-  // Wire botão limpar seleção
+  // === Modal de prévia: fechar/cancelar ===
+  const modalClose = document.getElementById('export-modal-close');
+  const modalCancel = document.getElementById('export-modal-cancel');
+  if (modalClose) modalClose.addEventListener('click', closeExportPreview);
+  if (modalCancel) modalCancel.addEventListener('click', closeExportPreview);
+  // Clique no backdrop (fora do card) fecha o modal
+  const modal = document.getElementById('export-preview-modal');
+  if (modal) {
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeExportPreview();
+    });
+  }
+  // ESC fecha o modal
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modal && !modal.classList.contains('hidden')) {
+      closeExportPreview();
+    }
+  });
+
+  // === Botão exclusivo de estorno no painel de Contrapartes ===
+  const cpReversalBtn = document.getElementById('counterparty-reversal-toggle');
+  if (cpReversalBtn) {
+    cpReversalBtn.addEventListener('click', () => {
+      state.reversalOnlyMode = !state.reversalOnlyMode;
+      updateReversalUI();
+      state.currentPage = 1;
+      applyFilters();
+    });
+  }
+
+  // === Botão limpar seleção ===
   const clearSel = document.getElementById('clear-selection');
   if (clearSel) {
     clearSel.addEventListener('click', () => {
@@ -1937,7 +2532,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Wire botões de expandir/recolher (aplica para qualquer .collapse-toggle com data-target)
+  // === Botões colapsáveis ===
   document.querySelectorAll('.collapse-toggle').forEach((btn) => {
     btn.addEventListener('click', () => {
       const targetId = btn.getAttribute('data-target');

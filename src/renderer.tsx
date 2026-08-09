@@ -7,21 +7,35 @@ export const renderer = jsxRenderer(({ children }) => {
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Leitor de Extrato Bancário OFX</title>
-        {/* Configuração do Tailwind para dark mode via classe (deve vir ANTES do CDN) */}
+        {/*
+          1) Anti-flash: aplica classe .dark no <html> ANTES do render.
+             Uso add/remove explícitos para garantir estado correto em ambas as direções.
+        */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
-              // Restaura tema salvo antes do Tailwind carregar (evita flash)
               (function() {
                 try {
                   var saved = localStorage.getItem('theme');
-                  if (saved === 'dark' || (!saved && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-                    document.documentElement.classList.add('dark');
-                  }
+                  var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+                  var isDark = saved === 'dark' || (!saved && prefersDark);
+                  var root = document.documentElement;
+                  if (isDark) root.classList.add('dark');
+                  else root.classList.remove('dark');
                 } catch(e) {}
               })();
-              window.tailwind = window.tailwind || {};
-              window.tailwind.config = { darkMode: 'class' };
+            `,
+          }}
+        ></script>
+        {/*
+          2) Configura Tailwind Play CDN ANTES de carregá-lo.
+             O CDN lê window.tailwind.config na inicialização, então definir aqui
+             garante que darkMode:'class' seja aplicado.
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              window.tailwind = { config: { darkMode: 'class' } };
             `,
           }}
         ></script>

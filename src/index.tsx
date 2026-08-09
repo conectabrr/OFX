@@ -404,16 +404,35 @@ app.get('/', (c) => {
                   class="ml-2 text-xs sm:text-sm font-normal text-gray-500 dark:text-slate-400"
                 ></span>
               </h2>
-              <button
-                id="counterparty-toggle"
-                class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800"
-              >
-                <i class="fas fa-chevron-up"></i>
-                <span class="ml-1 hidden sm:inline">Recolher</span>
-              </button>
+              <div class="flex items-center gap-2 flex-wrap">
+                {/* Botão exclusivo de estorno - toggle independente do filtro de tipo */}
+                <button
+                  id="counterparty-reversal-toggle"
+                  type="button"
+                  class="hidden bg-amber-50 dark:bg-amber-900/40 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60 px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5"
+                  title="Mostrar apenas contrapartes com estornos"
+                  aria-pressed="false"
+                >
+                  <i class="fas fa-undo"></i>
+                  <span>Somente estornos</span>
+                  <span
+                    id="counterparty-reversal-badge"
+                    class="bg-amber-200 dark:bg-amber-800 text-amber-900 dark:text-amber-100 rounded-full px-1.5 text-[10px] font-bold"
+                  >
+                    0
+                  </span>
+                </button>
+                <button
+                  id="counterparty-toggle"
+                  class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800"
+                >
+                  <i class="fas fa-chevron-up"></i>
+                  <span class="ml-1 hidden sm:inline">Recolher</span>
+                </button>
+              </div>
             </div>
             <p class="text-xs text-gray-500 dark:text-slate-400 mb-3">
-              Clique em uma contraparte para filtrar. Sincronizada com o tipo de transação selecionado.
+              Clique em uma contraparte para filtrar. Use <strong class="text-amber-700 dark:text-amber-300">Somente estornos</strong> para isolar devoluções/reembolsos independente do tipo de transação.
             </p>
             <div
               id="counterparty-panel"
@@ -467,6 +486,9 @@ app.get('/', (c) => {
                     <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Tipo</th>
                     <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Descrição</th>
                     <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Conta Destino/Origem</th>
+                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="Motivo do estorno (Estorno, Devolução, Chargeback, etc.)">Motivo Estorno</th>
+                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="Nome do destinatário original / beneficiário do estorno">Destinatário Estorno</th>
+                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="FITID da transação original que este estorno corrige">FITID Original</th>
                     <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">TxId</th>
                     <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Valor</th>
                     <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Antes</th>
@@ -476,7 +498,7 @@ app.get('/', (c) => {
                 <tbody id="transactions-tbody" class="divide-y divide-gray-100 dark:divide-slate-700"></tbody>
                 <tfoot class="bg-gray-50 dark:bg-slate-900 border-t-2 border-gray-200 dark:border-slate-700">
                   <tr>
-                    <td colspan="6" class="px-3 py-3 text-right font-semibold text-gray-700 dark:text-slate-200">
+                    <td colspan="9" class="px-3 py-3 text-right font-semibold text-gray-700 dark:text-slate-200">
                       Total filtrado<span id="filtered-total-label">:</span>
                     </td>
                     <td id="filtered-total" class="px-3 py-3 text-right font-bold text-gray-900 dark:text-slate-100">
@@ -525,6 +547,91 @@ app.get('/', (c) => {
           </div>
         </section>
       </main>
+
+      {/* Modal de Prévia de Exportação (PDF / CSV) */}
+      <div
+        id="export-preview-modal"
+        class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="export-modal-title"
+      >
+        <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-6xl max-h-[92vh] flex flex-col overflow-hidden border border-gray-200 dark:border-slate-700">
+          {/* Header do modal */}
+          <div class="px-5 sm:px-6 py-4 border-b border-gray-200 dark:border-slate-700 bg-gradient-to-r from-blue-700 to-indigo-800 dark:from-slate-900 dark:to-slate-800 text-white flex items-center justify-between flex-wrap gap-2">
+            <div class="flex items-center gap-3">
+              <i id="export-modal-icon" class="fas fa-file-pdf text-2xl"></i>
+              <div>
+                <h3 id="export-modal-title" class="text-base sm:text-lg font-bold leading-tight">
+                  Prévia de Exportação
+                </h3>
+                <p id="export-modal-subtitle" class="text-xs sm:text-sm text-blue-100 dark:text-slate-300">
+                  Revise os dados antes de baixar o arquivo
+                </p>
+              </div>
+            </div>
+            <button
+              id="export-modal-close"
+              type="button"
+              class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-white/10 transition"
+              title="Fechar (Esc)"
+              aria-label="Fechar modal"
+            >
+              <i class="fas fa-times text-lg"></i>
+            </button>
+          </div>
+
+          {/* Meta / resumo */}
+          <div class="px-5 sm:px-6 py-3 bg-gray-50 dark:bg-slate-900/50 border-b border-gray-200 dark:border-slate-700 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs sm:text-sm">
+            <div>
+              <div class="text-[10px] uppercase font-semibold text-gray-500 dark:text-slate-400">Transações</div>
+              <div id="preview-meta-count" class="font-bold text-gray-800 dark:text-slate-100">0</div>
+            </div>
+            <div>
+              <div class="text-[10px] uppercase font-semibold text-gray-500 dark:text-slate-400">Créditos</div>
+              <div id="preview-meta-credits" class="font-bold text-green-600 dark:text-green-400">R$ 0,00</div>
+            </div>
+            <div>
+              <div class="text-[10px] uppercase font-semibold text-gray-500 dark:text-slate-400">Débitos</div>
+              <div id="preview-meta-debits" class="font-bold text-red-600 dark:text-red-400">R$ 0,00</div>
+            </div>
+            <div>
+              <div class="text-[10px] uppercase font-semibold text-gray-500 dark:text-slate-400">Saldo</div>
+              <div id="preview-meta-balance" class="font-bold text-indigo-600 dark:text-indigo-400">R$ 0,00</div>
+            </div>
+          </div>
+
+          {/* Corpo scrollável com prévia */}
+          <div class="flex-1 overflow-auto px-5 sm:px-6 py-4">
+            <div id="preview-body" class="text-xs sm:text-sm"></div>
+          </div>
+
+          {/* Rodapé com ações */}
+          <div class="px-5 sm:px-6 py-4 border-t border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-900/50 flex items-center justify-between flex-wrap gap-3">
+            <div class="text-xs text-gray-500 dark:text-slate-400">
+              <i class="fas fa-info-circle mr-1"></i>
+              <span id="preview-footer-hint">O arquivo será baixado após confirmar</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                id="export-modal-cancel"
+                type="button"
+                class="px-4 py-2 rounded-lg text-sm font-medium bg-gray-200 dark:bg-slate-700 hover:bg-gray-300 dark:hover:bg-slate-600 text-gray-700 dark:text-slate-200 transition"
+              >
+                <i class="fas fa-times mr-1"></i>Cancelar
+              </button>
+              <button
+                id="export-modal-confirm"
+                type="button"
+                class="px-4 py-2 rounded-lg text-sm font-semibold text-white transition bg-blue-600 hover:bg-blue-700"
+              >
+                <i class="fas fa-download mr-1"></i>
+                <span id="export-modal-confirm-label">Baixar</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <footer class="text-center text-gray-500 dark:text-slate-400 text-xs sm:text-sm py-6 px-4">
         <p>
