@@ -1,1 +1,66 @@
-h1 { font-family: Arial, Helvetica, sans-serif; }
+/* Custom styles */
+body {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+#drop-zone.dragover {
+  background-color: #eff6ff;
+  border-color: #2563eb;
+  transform: scale(1.01);
+}
+
+/* Table hover */
+#transactions-tbody tr:hover {
+  background-color: #f9fafb;
+}
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.badge-credit {
+  background-color: #d1fae5;
+  color: #065f46;
+}
+.badge-debit {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Loading spinner */
+.spinner {
+  border: 3px solid #e5e7eb;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

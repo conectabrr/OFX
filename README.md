@@ -1,21 +1,144 @@
-```txt
-npm install
-npm run dev
+# Leitor de Extrato Bancário OFX
+
+## Visão Geral
+- **Nome**: Leitor de Extrato OFX
+- **Objetivo**: Sistema web para leitura e análise de extratos bancários em formato OFX (Open Financial Exchange), padrão usado por bancos brasileiros
+- **Diferencial**: Processamento 100% local no navegador — nenhum dado bancário é enviado para servidores
+
+> **Nota sobre o formato**: A solicitação original mencionava "pfx", porém PFX é formato de certificado digital. O formato correto para extratos bancários é **OFX** (Open Financial Exchange), que é o adotado pela maioria dos bancos brasileiros para exportação de extratos.
+
+## URLs
+- **Sandbox (desenvolvimento)**: https://3000-ieuqgzbrndccyipebk6dr-b237eb32.sandbox.novita.ai
+- **Arquivo OFX de exemplo**: `/exemplo.ofx` (download disponível para teste)
+- **Produção**: (não deployado ainda)
+
+## Funcionalidades Implementadas
+
+### 📤 Upload
+- Upload por drag-and-drop ou seleção manual
+- Detecção automática de encoding ISO-8859-1 (padrão dos bancos brasileiros)
+- Suporte a OFX SGML (v1.x) e XML (v2.x)
+
+### 📊 Painel de Estatísticas
+- Total de transações
+- Total de créditos (com contagem de entradas)
+- Total de débitos (com contagem de saídas)
+- Saldo do período (créditos - débitos)
+- Ticket médio das transações
+
+### 🔍 Filtros Personalizados
+- **Por tipo**: Todas / Somente Créditos / Somente Débitos
+- **Por período**: Data inicial e final
+- **Por descrição**: Busca textual (PIX, TED, salário, etc.)
+- **Por valor**: Valor mínimo e máximo
+- **Ordenação**: Data (crescente/decrescente), Valor (crescente/decrescente), Descrição (A-Z)
+
+### 📈 Visualizações
+- Gráfico de barras diário (créditos vs débitos) usando Chart.js
+- Tabela detalhada de transações com badges de tipo
+- Card de informações da conta (banco, agência, conta, tipo, período, saldo)
+
+### 💾 Exportação
+- Exportação para CSV com BOM UTF-8 (abre corretamente no Excel)
+- Separador ponto-e-vírgula (padrão brasileiro)
+- Valores em formato brasileiro (vírgula decimal)
+
+## Rotas Disponíveis
+
+| Método | Rota                | Descrição                                    |
+|--------|---------------------|----------------------------------------------|
+| GET    | `/`                 | Página principal (SPA de análise de extratos)|
+| GET    | `/static/app.js`    | JavaScript do frontend (parser + UI)         |
+| GET    | `/static/style.css` | Estilos customizados                         |
+| GET    | `/exemplo.ofx`      | Arquivo OFX de exemplo para testes           |
+
+Não há endpoints de API — todo o processamento OFX ocorre client-side por questões de segurança.
+
+## Arquitetura de Dados
+
+### Modelo de Transação
+```typescript
+{
+  id: string,          // FITID do OFX
+  date: Date,          // DTPOSTED
+  type: 'credit'|'debit', // baseado no sinal do TRNAMT
+  trnType: string,     // TRNTYPE (CREDIT, DEBIT, PIX, XFER, etc)
+  description: string, // MEMO + NAME
+  memo: string,        // MEMO original
+  name: string,        // NAME original
+  document: string,    // CHECKNUM ou REFNUM
+  amount: number,      // valor com sinal
+  absAmount: number    // valor absoluto
+}
 ```
 
-```txt
-npm run deploy
+### Modelo de Conta
+```typescript
+{
+  bankId: string,      // BANKID
+  branchId: string,    // BRANCHID
+  accountId: string,   // ACCTID
+  accountType: string, // CHECKING, SAVINGS, etc
+  currency: string,    // CURDEF (padrão BRL)
+  startDate: Date,     // DTSTART
+  endDate: Date,       // DTEND
+  balance: number,     // BALAMT
+  balanceDate: Date    // DTASOF
+}
 ```
 
-[For generating/synchronizing types based on your Worker configuration run](https://developers.cloudflare.com/workers/wrangler/commands/#types):
+### Armazenamento
+- **Sem persistência**: os dados existem apenas na memória do navegador durante a sessão
+- Ao recarregar a página, o usuário precisa fazer upload novamente
+- **Motivo**: privacidade — dados bancários sensíveis nunca saem da máquina do usuário
 
-```txt
-npm run cf-typegen
-```
+## Guia de Uso
 
-Pass the `CloudflareBindings` as generics when instantiation `Hono`:
+1. **Baixe o extrato OFX** do seu banco (opção geralmente disponível no internet banking, seção "Extrato" → "Baixar em OFX" ou "Financial Exchange")
+2. **Acesse a aplicação** e arraste o arquivo `.ofx` para a área de upload (ou clique para selecionar)
+3. **Explore o painel** com estatísticas automáticas do período
+4. **Aplique filtros** conforme sua necessidade:
+   - Ex: "Quanto gastei em PIX este mês?" → tipo: Débitos, buscar: "PIX"
+   - Ex: "Quais os maiores gastos?" → ordenar por Valor decrescente
+5. **Exporte em CSV** para análises adicionais no Excel
 
-```ts
-// src/index.ts
-const app = new Hono<{ Bindings: CloudflareBindings }>()
+## Recursos Ainda Não Implementados
+
+- 🔲 Categorização automática de transações (mercado, transporte, lazer, etc.)
+- 🔲 Comparação entre múltiplos extratos (mês vs mês)
+- 🔲 Detecção de transações recorrentes (assinaturas, contas fixas)
+- 🔲 Persistência opcional (IndexedDB) para o usuário não precisar reenviar o arquivo
+- 🔲 Suporte a arquivos CSV/TXT de outros formatos
+- 🔲 Relatório imprimível em PDF
+- 🔲 Modo escuro (dark mode)
+- 🔲 Detecção e alertas de gastos incomuns
+
+## Próximos Passos Recomendados
+
+1. **Categorização inteligente**: implementar regras (regex) para classificar transações automaticamente por palavras-chave (Uber → Transporte, iFood → Alimentação, etc.)
+2. **Múltiplos arquivos**: permitir carregar vários extratos e consolidar em uma visão única
+3. **Persistência local**: usar IndexedDB para salvar histórico de extratos analisados
+4. **Deploy em produção**: publicar no Cloudflare Pages
+5. **Testes automatizados**: adicionar testes unitários para o parser OFX
+
+## Deploy
+- **Plataforma**: Cloudflare Pages
+- **Status**: 🚧 Rodando em sandbox de desenvolvimento
+- **Stack**: Hono + TypeScript + Vite + TailwindCSS + Chart.js
+- **Última atualização**: 2026-08-09
+
+## Comandos Úteis
+
+```bash
+# Build de produção
+npm run build
+
+# Iniciar servidor local via PM2
+pm2 start ecosystem.config.cjs
+
+# Ver logs
+pm2 logs webapp --nostream
+
+# Parar servidor
+pm2 delete webapp
 ```
