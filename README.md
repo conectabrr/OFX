@@ -25,6 +25,7 @@
 - Respeita `prefers-color-scheme` do sistema **apenas na primeira visita** — depois disso a escolha do usuário prevalece sobre a preferência do sistema
 - Cores adaptativas no gráfico (grades e labels)
 - Cards de resumo, painéis e tabela todos com variantes escuras
+- **Correção do modo claro** (Turn 6): a configuração `darkMode: 'class'` do Tailwind é definida em `window.tailwind.config` **antes** do carregamento do CDN (padrão correto do Play CDN). `setTheme` usa `classList.add/remove` explícito em vez de `toggle`, e o handler do botão tem `preventDefault()` + `stopPropagation()`. Isso corrige o bug em que o modo escuro funcionava mas não era possível voltar ao modo claro.
 
 ### 📐 Layout em Largura Total
 - A página ocupa **toda a largura** disponível (não há mais `max-w-7xl`) para melhor visualização das colunas
@@ -75,9 +76,15 @@ Ideal para focar na tabela em telas menores ou ocultar temporariamente informaç
 
 ### 👥 Painel de Contrapartes com Contagem de Estornos
 Além da contagem por tipo (crédito/débito), o painel de Contrapartes agora mostra:
-- **No modo "Todas"**: badge amarelo com número de estornos por contraparte + valor total de estornos
+- **Em todos os modos**: badge amarelo com número de estornos por contraparte + valor total de estornos
 - Ícone de "undo" (↺) ao lado do nome quando a contraparte tem estornos associados
-- Nos modos "Créditos" ou "Débitos" o dado de estorno fica oculto (já contabilizado no crédito/débito da própria transação)
+
+### 🔁 Botão Exclusivo de Estorno (independente do filtro de débito)
+- Botão dedicado **"Somente Estornos"** no cabeçalho do painel de Contrapartes
+- Aparece automaticamente apenas quando o arquivo contém pelo menos um estorno; badge âmbar mostra a quantidade
+- **Independente** do filtro de tipo (Créditos/Débitos): pode ser combinado com qualquer combinação de filtros
+- Quando ativo, o painel de contrapartes mostra apenas quem participou de estornos, e a tabela filtra somente essas transações
+- Estilo visual próprio (âmbar) para não confundir com o filtro de estorno do dropdown
 
 ### 🔄 Filtro de Estorno / Devolução
 - Detecção automática por:
@@ -88,16 +95,43 @@ Além da contagem por tipo (crédito/débito), o painel de Contrapartes agora mo
 - Opções: **Todos** / **Somente estornos** / **Ocultar estornos**
 - Badge amarelo na tabela indicando o motivo (Estorno, Devolução, etc.)
 
-### 📄 Exportação em PDF
+### 🧾 Colunas Detalhadas de Estorno
+Na tabela principal, as transações de estorno agora expõem 3 colunas adicionais em destaque âmbar:
+- **Motivo Estorno** — categoria detectada (Estorno, Devolução, Reembolso, Chargeback, Cancelamento, Reversão, Ressarcimento) + descrição da transação original quando disponível
+- **Destinatário Estorno** — nome da pessoa/empresa a quem o débito original foi enviado (o beneficiário do valor sendo devolvido)
+- **FITID Original** — identificador da transação original que está sendo revertida (`CORRECTFITID` do OFX)
+
+**Resolução do destinatário em 3 níveis** (por ordem de prioridade):
+1. **Regex sobre MEMO/NAME** — padrões brasileiros como `ESTORNO IFOOD PEDIDO ALMOÇO` → `IFOOD`, `DEVOLUÇÃO PIX MARIA SILVA` → `MARIA SILVA`
+2. **Bloco `<PAYEE>`** — leitura estruturada quando o OFX inclui o beneficiário
+3. **Lookup por `CORRECTFITID`** — post-processing que localiza a transação original pelo FITID e herda a contraparte dela
+
+Nos cards mobile, os detalhes do estorno aparecem em um bloco colapsável dentro do próprio card.
+
+### 👁️ Modal de Prévia para Exportação
+Ao clicar em **CSV** ou **PDF**, um modal de pré-visualização é aberto antes do download:
+- **Header colorido** com ícone (verde para CSV, vermelho para PDF) e nome do arquivo que será gerado
+- **Grid de 4 cards** com metadados: total de transações, créditos, débitos e saldo do que será exportado
+- **Prévia scrollável** das primeiras 50 linhas (com aviso de "+N linhas restantes" quando houver mais), respeitando filtros e seleção atual
+- Linhas de estorno destacadas com fundo âmbar mesmo na prévia
+- Fechamento por: botão X, botão Cancelar, clique no backdrop ou tecla **ESC**
+- Só após clicar em **Baixar** o arquivo é efetivamente gerado — evita downloads acidentais
+
+### 📄 Exportação em PDF Profissional
 - Botão vermelho **PDF** ao lado do CSV
-- Relatório em paisagem A4 contendo:
-  - Cabeçalho com dados da conta e período
-  - Filtros aplicados no momento da exportação
-  - Resumo estatístico (créditos, débitos, saldo, estornos)
-  - Tabela completa das transações filtradas
-  - Total filtrado no rodapé
-  - Paginação em todas as páginas
+- Fluxo: clique → **modal de prévia** → confirmação → geração do PDF
+- Relatório em paisagem A4 com layout profissional:
+  - **Header colorido** com faixa gradiente indigo (24mm) + faixa de acento e título/subtítulo em branco
+  - **Card de informações da conta** com grid de 8 campos: Banco, Agência, Conta, Período, Saldo, Moeda, Total no extrato e No relatório
+  - **Card de filtros aplicados** (fundo azul-50) descrevendo cada filtro ativo no momento da exportação
+  - **5 summary cards** com borda esquerda colorida: Transações, Créditos, Débitos, Saldo, Estornos
+  - **Tabela com destaque âmbar** para linhas de estorno; fonte Courier em FITID e TxId para leitura de identificadores; valores em negrito e coloridos por tipo
+  - **Header repetido** em todas as páginas de continuação
+  - **Footer profissional** com linha separadora, marca do sistema e paginação (`Página X de Y`)
+  - **Card de total** com fundo escuro no fim do relatório
+  - **Legenda** explicando o realce âmbar das linhas de estorno
 - Usa **jsPDF + autotable** (via CDN) — geração 100% no navegador
+- Colunas incluídas: 11 no total (Data/Hora, Tipo, Descrição, Conta Destino/Origem, Motivo Estorno, Destinatário Estorno, FITID Original, TxId, Valor, Saldo Antes, Saldo Após)
 
 ### 📊 Painel de Estatísticas
 - Total de transações
@@ -193,7 +227,19 @@ Não há endpoints de API — todo o processamento OFX ocorre client-side por qu
   counterpartyName: string,    // apenas o nome
   counterpartyAccount: string, // número da conta (ACCTID de <BANKACCTTO>)
   counterpartyBank: string,    // BANKID
-  counterpartyBranch: string   // BRANCHID
+  counterpartyBranch: string,  // BRANCHID
+  // Campos de estorno (preenchidos quando isReversal === true)
+  isReversal: boolean,             // true se é estorno/devolução
+  reversalReason: string,          // "Estorno", "Devolução", "Chargeback", etc.
+  correctFitId: string,            // FITID da transação original (CORRECTFITID do OFX)
+  correctAction: string,           // REPLACE ou DELETE (CORRECTACTION do OFX)
+  reversalRecipient: string,       // nome do destinatário do débito original
+  reversalOriginalDate: Date,      // data da transação original (resolvido via lookup)
+  reversalOriginalAmount: number,  // valor da transação original
+  reversalOriginalDescription: string, // descrição da transação original
+  // Evolução de saldo
+  balanceBefore: number,       // saldo antes desta transação
+  balanceAfter: number         // saldo depois desta transação
 }
 ```
 
@@ -239,9 +285,8 @@ Não há endpoints de API — todo o processamento OFX ocorre client-side por qu
 - 🔲 Detecção de transações recorrentes (assinaturas, contas fixas)
 - 🔲 Persistência opcional (IndexedDB) para o usuário não precisar reenviar o arquivo
 - 🔲 Suporte a arquivos CSV/TXT de outros formatos
-- 🔲 Relatório imprimível em PDF
-- 🔲 Modo escuro (dark mode)
 - 🔲 Detecção e alertas de gastos incomuns
+- 🔲 Exportação em outros formatos (Excel .xlsx, JSON)
 
 ## Próximos Passos Recomendados
 
@@ -255,7 +300,7 @@ Não há endpoints de API — todo o processamento OFX ocorre client-side por qu
 - **Plataforma**: Cloudflare Pages
 - **Status**: 🚧 Rodando em sandbox de desenvolvimento
 - **Stack**: Hono + TypeScript + Vite + TailwindCSS + Chart.js
-- **Última atualização**: 2026-08-09
+- **Última atualização**: 2026-08-09 (Turn 6 — botão exclusivo estorno, colunas de destinatário, modal de prévia, PDF profissional, fix modo claro)
 
 ## Comandos Úteis
 
