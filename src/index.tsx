@@ -57,32 +57,19 @@ app.get('/', (c) => {
               Envie seu extrato bancário
             </h2>
             <p class="text-gray-600 dark:text-slate-300 mb-4 text-sm sm:text-base">
-              Arraste e solte o arquivo <strong>.ofx</strong>, <strong>.xlsx</strong> ou <strong>.xls</strong> aqui ou clique para
+              Arraste e solte o arquivo <strong>.ofx</strong> aqui ou clique para
               selecionar
             </p>
-            <input type="file" id="file-input" accept=".ofx,.OFX,.xlsx,.XLSX,.xls,.XLS" class="hidden" />
+            <input type="file" id="file-input" accept=".ofx,.OFX" class="hidden" />
             <button
               id="select-file-btn"
               class="bg-blue-600 hover:bg-blue-700 text-white px-4 sm:px-6 py-2 sm:py-3 rounded-lg font-medium transition text-sm sm:text-base"
             >
-              <i class="fas fa-folder-open mr-2"></i>Selecionar Arquivo
+              <i class="fas fa-folder-open mr-2"></i>Selecionar Arquivo OFX
             </button>
-            <div class="mt-4 flex flex-wrap justify-center gap-2 text-xs">
-              <span class="inline-flex items-center gap-1 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-2 py-1 rounded">
-                <i class="fas fa-file-alt"></i> OFX (Open Financial Exchange)
-              </span>
-              <span class="inline-flex items-center gap-1 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 px-2 py-1 rounded">
-                <i class="fas fa-file-excel"></i> Excel (.xlsx / .xls)
-              </span>
-              <span class="inline-flex items-center gap-1 bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 px-2 py-1 rounded">
-                <i class="fas fa-file-pdf"></i> PDF (em breve)
-              </span>
-              <span class="inline-flex items-center gap-1 bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 px-2 py-1 rounded">
-                <i class="fas fa-file-code"></i> CNAB (em breve)
-              </span>
-            </div>
-            <p class="text-xs text-gray-500 dark:text-slate-400 mt-3">
-              Excel: auto-detecção de colunas (Data / Descrição / Valor / Saldo) com fallback manual quando o layout for desconhecido
+            <p class="text-xs text-gray-500 dark:text-slate-400 mt-4">
+              Formatos suportados: OFX (Open Financial Exchange) - padrão de extratos
+              bancários brasileiros
             </p>
           </div>
 
@@ -640,163 +627,6 @@ app.get('/', (c) => {
               >
                 <i class="fas fa-download mr-1"></i>
                 <span id="export-modal-confirm-label">Baixar</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Modal de Mapeamento Manual de Colunas Excel (fallback quando auto-detect falha) */}
-      <div
-        id="excel-mapping-modal"
-        class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="excel-mapping-title"
-      >
-        <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden border border-gray-200 dark:border-slate-700">
-          {/* Header */}
-          <div class="px-5 sm:px-6 py-4 border-b border-gray-200 dark:border-slate-700 bg-gradient-to-r from-emerald-600 to-teal-700 dark:from-slate-900 dark:to-slate-800 text-white flex items-center justify-between flex-wrap gap-2">
-            <div class="flex items-center gap-3">
-              <i class="fas fa-file-excel text-2xl"></i>
-              <div>
-                <h3 id="excel-mapping-title" class="text-base sm:text-lg font-bold leading-tight">
-                  Mapeamento de Colunas do Excel
-                </h3>
-                <p class="text-xs sm:text-sm text-emerald-100 dark:text-slate-300">
-                  <span id="excel-mapping-subtitle">Indique quais colunas do arquivo correspondem a cada campo</span>
-                </p>
-              </div>
-            </div>
-            <button
-              id="excel-mapping-close"
-              type="button"
-              class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-white/10 transition"
-              title="Fechar (Esc)"
-              aria-label="Fechar modal"
-            >
-              <i class="fas fa-times text-lg"></i>
-            </button>
-          </div>
-
-          {/* Info da planilha */}
-          <div class="px-5 sm:px-6 py-3 bg-gray-50 dark:bg-slate-900/50 border-b border-gray-200 dark:border-slate-700 text-xs sm:text-sm">
-            <div class="flex flex-wrap gap-x-4 gap-y-1 items-center">
-              <div>
-                <span class="text-gray-500 dark:text-slate-400">Aba:</span>
-                <select id="excel-sheet-select" class="ml-1 px-2 py-1 rounded border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 text-xs">
-                  <option>-</option>
-                </select>
-              </div>
-              <div>
-                <span class="text-gray-500 dark:text-slate-400">Linha de cabeçalho:</span>
-                <input
-                  id="excel-header-row"
-                  type="number"
-                  min="1"
-                  max="50"
-                  value="1"
-                  class="ml-1 w-16 px-2 py-1 rounded border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 text-xs"
-                />
-              </div>
-              <div>
-                <span class="text-gray-500 dark:text-slate-400">Linhas encontradas:</span>
-                <span id="excel-rows-count" class="ml-1 font-bold text-gray-800 dark:text-slate-100">0</span>
-              </div>
-              <div>
-                <span class="text-gray-500 dark:text-slate-400">Colunas:</span>
-                <span id="excel-cols-count" class="ml-1 font-bold text-gray-800 dark:text-slate-100">0</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Mapping fields */}
-          <div class="px-5 sm:px-6 py-4 border-b border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800">
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              <div>
-                <label class="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
-                  <i class="fas fa-calendar text-blue-500 mr-1"></i>Data <span class="text-red-500">*</span>
-                </label>
-                <select id="map-col-date" class="w-full px-3 py-2 rounded border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 text-sm"></select>
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
-                  <i class="fas fa-align-left text-purple-500 mr-1"></i>Descrição / Histórico <span class="text-red-500">*</span>
-                </label>
-                <select id="map-col-description" class="w-full px-3 py-2 rounded border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 text-sm"></select>
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
-                  <i class="fas fa-dollar-sign text-green-500 mr-1"></i>Valor <span class="text-xs text-gray-400 dark:text-slate-500 font-normal">(único, com sinal)</span>
-                </label>
-                <select id="map-col-amount" class="w-full px-3 py-2 rounded border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 text-sm"></select>
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
-                  <i class="fas fa-arrow-up text-green-500 mr-1"></i>Crédito / Entrada <span class="text-xs text-gray-400 dark:text-slate-500 font-normal">(coluna separada)</span>
-                </label>
-                <select id="map-col-credit" class="w-full px-3 py-2 rounded border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 text-sm"></select>
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
-                  <i class="fas fa-arrow-down text-red-500 mr-1"></i>Débito / Saída <span class="text-xs text-gray-400 dark:text-slate-500 font-normal">(coluna separada)</span>
-                </label>
-                <select id="map-col-debit" class="w-full px-3 py-2 rounded border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 text-sm"></select>
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
-                  <i class="fas fa-wallet text-indigo-500 mr-1"></i>Saldo <span class="text-xs text-gray-400 dark:text-slate-500 font-normal">(opcional)</span>
-                </label>
-                <select id="map-col-balance" class="w-full px-3 py-2 rounded border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 text-sm"></select>
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
-                  <i class="fas fa-hashtag text-gray-500 mr-1"></i>Documento / TxId <span class="text-xs text-gray-400 dark:text-slate-500 font-normal">(opcional)</span>
-                </label>
-                <select id="map-col-document" class="w-full px-3 py-2 rounded border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 text-sm"></select>
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
-                  <i class="fas fa-tag text-cyan-500 mr-1"></i>Tipo <span class="text-xs text-gray-400 dark:text-slate-500 font-normal">(opcional)</span>
-                </label>
-                <select id="map-col-trntype" class="w-full px-3 py-2 rounded border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-800 dark:text-slate-100 text-sm"></select>
-              </div>
-            </div>
-            <div class="mt-3 text-xs text-gray-500 dark:text-slate-400">
-              <i class="fas fa-lightbulb text-yellow-500 mr-1"></i>
-              Dica: use <strong>Valor único</strong> quando a planilha tem uma coluna com valores positivos (crédito) e negativos (débito).
-              Use <strong>Crédito / Débito</strong> quando são duas colunas separadas.
-            </div>
-          </div>
-
-          {/* Preview */}
-          <div class="flex-1 overflow-auto px-5 sm:px-6 py-3">
-            <div class="text-xs font-semibold text-gray-600 dark:text-slate-300 mb-2">
-              <i class="fas fa-eye mr-1"></i>Prévia (primeiras linhas do arquivo)
-            </div>
-            <div id="excel-preview-body" class="text-xs"></div>
-          </div>
-
-          {/* Footer */}
-          <div class="px-5 sm:px-6 py-4 border-t border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-900/50 flex items-center justify-between flex-wrap gap-3">
-            <div class="text-xs text-gray-500 dark:text-slate-400">
-              <i class="fas fa-info-circle mr-1"></i>
-              Campos com <span class="text-red-500 font-bold">*</span> são obrigatórios
-            </div>
-            <div class="flex items-center gap-2">
-              <button
-                id="excel-mapping-cancel"
-                type="button"
-                class="px-4 py-2 rounded-lg text-sm font-medium bg-gray-200 dark:bg-slate-700 hover:bg-gray-300 dark:hover:bg-slate-600 text-gray-700 dark:text-slate-200 transition"
-              >
-                <i class="fas fa-times mr-1"></i>Cancelar
-              </button>
-              <button
-                id="excel-mapping-confirm"
-                type="button"
-                class="px-4 py-2 rounded-lg text-sm font-semibold text-white transition bg-emerald-600 hover:bg-emerald-700"
-              >
-                <i class="fas fa-check mr-1"></i>Importar Transações
               </button>
             </div>
           </div>

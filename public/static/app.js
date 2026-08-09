@@ -13,7 +13,6 @@ const state = {
   counterpartyList: [],
   selectedIds: new Set(),   // FITIDs selecionados (checkboxes)
   reversalOnlyMode: false,  // Botão exclusivo: mostra apenas transações de estorno
-  sourceFormat: 'OFX',      // Formato do arquivo importado (OFX / Excel / ...)
 };
 
 // ============================================================
@@ -367,57 +366,19 @@ function detectReversalReason(memo, name, correctFitId) {
 function extractReversalRecipient(memo, name) {
   const source = `${memo} ${name}`.trim();
   if (!source) return '';
-
-  // Stop-words que NÃO são o destinatário — pulamos ao capturar
-  const STOP = new Set([
-    'PIX', 'TED', 'DOC', 'TRANSF', 'TRANSFERENCIA', 'TRANSFERÊNCIA',
-    'PAGAMENTO', 'PAGTO', 'PGTO', 'COMPRA', 'COMPRAS', 'DEBITO', 'DÉBITO',
-    'CREDITO', 'CRÉDITO', 'ENVIADO', 'ENVIADA', 'RECEBIDO', 'RECEBIDA',
-    'EFETUADO', 'EFETUADA', 'CANCELADO', 'CANCELADA', 'CANCELADAS', 'CANCELADOS',
-    'PEDIDO', 'PEDIDOS', 'ASSINATURA', 'MENSALIDADE',
-    'PARA', 'DE', 'DO', 'DA', 'DOS', 'DAS', 'A', 'AO', 'AOS', 'AS', 'À', 'ÀS',
-    'CANCEL', 'CANCELAMENTO',
-  ]);
-
-  // Tenta patterns específicos com preposição explícita primeiro
-  const strong = [
-    // "ESTORNO ... PARA <NOME>"
-    /(?:ESTORNO|DEVOLU[ÇC][ÃA]O|REEMBOLSO|CANCELAMENTO|CHARGEBACK|RESSARCIMENTO|REVERS[AÃ]O)\s+(?:[A-ZÀ-Ú]+\s+)*?PARA\s+([A-ZÀ-Ú][A-ZÀ-Ú0-9\s.&'-]{2,60}?)(?=\s+(?:PEDIDO|COMPRA|ASSINATURA|CPF|CNPJ|AG\.|CC\.|BCO|BANCO|-|$))/i,
-    // "ESTORNO ... DE <NOME>"
-    /(?:ESTORNO|DEVOLU[ÇC][ÃA]O|REEMBOLSO)\s+(?:[A-ZÀ-Ú]+\s+)*?DE\s+([A-ZÀ-Ú][A-ZÀ-Ú0-9\s.&'-]{2,60}?)(?=\s+(?:PEDIDO|COMPRA|ASSINATURA|CPF|CNPJ|AG\.|CC\.|BCO|BANCO|-|$))/i,
+  // Tenta capturar o "assunto" após a palavra-chave de estorno
+  const patterns = [
+    // "ESTORNO PIX ENVIADO PARA <NOME>" ou "ESTORNO PARA <NOME>"
+    /(?:ESTORNO|DEVOLU[ÇC][ÃA]O|REEMBOLSO|CANCELAMENTO|CHARGEBACK|RESSARCIMENTO|REVERS[AÃ]O)\s+(?:PIX|TED|DOC|TRANSF(?:ERENCIA)?|PAGAMENTO|PAGTO|COMPRA|DEBITO)?\s*(?:ENVIADO|ENVIADA|CANCELAD[OA]|PARA|A|DE)?\s+([A-ZÀ-Ú][A-ZÀ-Ú0-9\s.&'-]{2,60}?)(?=\s+(?:PEDIDO|COMPRA|ASSINATURA|CPF|CNPJ|AG\.|CC\.|BCO|BANCO|-|$))/i,
+    // "ESTORNO <NOME>" seguido de descrição
+    /(?:ESTORNO|DEVOLU[ÇC][ÃA]O|REEMBOLSO)\s+([A-ZÀ-Ú][A-ZÀ-Ú0-9&.'-]{2,40})(?=\s|$)/i,
   ];
-  for (const re of strong) {
+  for (const re of patterns) {
     const m = source.match(re);
-    if (m && m[1]) return m[1].trim().replace(/\s+/g, ' ');
-  }
-
-  // Fallback: pega a primeira palavra "significativa" após a keyword de estorno,
-  // pulando stop-words. Ex.: "DEVOLUCAO COMPRA CANCELADA MAGAZINE" → MAGAZINE
-  const kwRe = /(?:ESTORNO|DEVOLU[ÇC][ÃA]O|REEMBOLSO|CANCELAMENTO|CHARGEBACK|RESSARCIMENTO|REVERS[AÃ]O|DEVOLVID[OA])\b/i;
-  const kwMatch = source.match(kwRe);
-  if (kwMatch) {
-    const rest = source.substring(kwMatch.index + kwMatch[0].length).trim();
-    const tokens = rest.split(/\s+/);
-    const picked = [];
-    for (const tok of tokens) {
-      const t = tok.replace(/[.,;:!?]$/, '').toUpperCase();
-      if (!t) continue;
-      if (STOP.has(t)) {
-        // Se já começamos a coletar e batemos numa stop-word, paramos
-        if (picked.length > 0) break;
-        continue;
-      }
-      // Ignora números puros (valores, códigos, CPF)
-      if (/^\d+[\d.,/-]*$/.test(t)) {
-        if (picked.length > 0) break;
-        continue;
-      }
-      picked.push(tok.replace(/[.,;:!?]$/, ''));
-      if (picked.length >= 4) break; // limite pra evitar pegar descrição toda
+    if (m && m[1]) {
+      return m[1].trim().replace(/\s+/g, ' ');
     }
-    if (picked.length > 0) return picked.join(' ').trim();
   }
-
   return '';
 }
 
@@ -667,20 +628,12 @@ function hideError() {
 function handleFile(file) {
   hideError();
   const ext = file.name.toLowerCase().split('.').pop();
-  const isOFX = ext === 'ofx';
-  const isExcel = ext === 'xlsx' || ext === 'xls' || ext === 'xlsm' || ext === 'xlsb';
-
-  if (!isOFX && !isExcel) {
-    showError('Formato não suportado. Use .ofx, .xlsx ou .xls');
+  if (ext !== 'ofx') {
+    showError('Por favor selecione um arquivo com extensão .ofx');
     return;
   }
 
-  if (isExcel) {
-    handleExcelFile(file);
-    return;
-  }
-
-  // OFX: lemos como ArrayBuffer para detectar o encoding correto
+  // Lemos primeiro como ArrayBuffer para detectar o encoding correto
   // (o OFX declara ENCODING e CHARSET no cabeçalho)
   const reader = new FileReader();
   reader.onload = (e) => {
@@ -690,7 +643,15 @@ function handleFile(file) {
       const decoder = new TextDecoder(encoding, { fatal: false });
       const content = decoder.decode(buffer);
       const { accountInfo, transactions } = parseOFX(content);
-      finalizeImport(accountInfo, transactions, 'OFX');
+      state.accountInfo = accountInfo;
+      state.transactions = transactions;
+      state.filtered = [...transactions];
+      renderDashboard();
+      uploadSection.classList.add('hidden');
+      dashboard.classList.remove('hidden');
+      // Mostra botão de "Novo arquivo" no header
+      resetBtn.classList.remove('hidden');
+      resetBtn.classList.add('inline-flex');
     } catch (err) {
       console.error(err);
       showError('Erro ao processar arquivo: ' + err.message);
@@ -698,610 +659,6 @@ function handleFile(file) {
   };
   reader.onerror = () => showError('Não foi possível ler o arquivo.');
   reader.readAsArrayBuffer(file);
-}
-
-/**
- * Finaliza a importação de qualquer formato (OFX/Excel/etc): atualiza o estado
- * e alterna para o dashboard.
- */
-function finalizeImport(accountInfo, transactions, sourceFormat) {
-  if (!transactions || transactions.length === 0) {
-    showError('Nenhuma transação foi encontrada no arquivo.');
-    return;
-  }
-  state.accountInfo = accountInfo;
-  state.transactions = transactions;
-  state.filtered = [...transactions];
-  state.sourceFormat = sourceFormat || 'OFX';
-  renderDashboard();
-  uploadSection.classList.add('hidden');
-  dashboard.classList.remove('hidden');
-  // Mostra botão de "Novo arquivo" no header
-  resetBtn.classList.remove('hidden');
-  resetBtn.classList.add('inline-flex');
-}
-
-/* ============================================================================
-   EXCEL PARSER — SheetJS (window.XLSX)
-   ============================================================================
-   Fluxo:
-   1. Ler arquivo como ArrayBuffer
-   2. XLSX.read() → workbook com sheets
-   3. Para cada sheet, tentar detectar linha de cabeçalho + colunas por keywords
-   4. Se auto-detect suceder → importar direto
-   5. Senão → abrir modal de mapeamento manual
-   ============================================================================ */
-
-// Estado temporário para o modal de mapeamento
-const excelState = {
-  workbook: null,
-  fileName: '',
-  sheetName: '',
-  headerRow: 1, // 1-indexed conforme UI
-  rows: [],    // array de arrays (raw AOA)
-  headers: [], // cabeçalhos detectados
-};
-
-function handleExcelFile(file) {
-  if (typeof XLSX === 'undefined') {
-    showError('Biblioteca de leitura Excel não carregou. Recarregue a página.');
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    try {
-      const buffer = e.target.result;
-      const workbook = XLSX.read(buffer, {
-        type: 'array',
-        cellDates: true,
-        cellNF: false,
-        cellText: false,
-      });
-      if (!workbook || !workbook.SheetNames || workbook.SheetNames.length === 0) {
-        showError('Arquivo Excel vazio ou inválido.');
-        return;
-      }
-      excelState.workbook = workbook;
-      excelState.fileName = file.name;
-
-      // Tenta auto-detectar em cada sheet
-      const detected = autoDetectExcelBankFormat(workbook);
-      if (detected && detected.transactions.length > 0) {
-        finalizeImport(detected.accountInfo, detected.transactions, 'Excel');
-        return;
-      }
-
-      // Fallback: abre modal de mapeamento manual
-      openExcelMappingModal(workbook.SheetNames[0]);
-    } catch (err) {
-      console.error(err);
-      showError('Erro ao processar Excel: ' + err.message);
-    }
-  };
-  reader.onerror = () => showError('Não foi possível ler o arquivo Excel.');
-  reader.readAsArrayBuffer(file);
-}
-
-/**
- * Tenta detectar automaticamente o layout de extrato em qualquer sheet do workbook.
- * Retorna { accountInfo, transactions } se conseguir, ou null caso contrário.
- */
-function autoDetectExcelBankFormat(workbook) {
-  const KEYWORDS = {
-    date: ['data', 'data mov', 'data movimento', 'data lanc', 'data lancamento', 'dt', 'dt.', 'dt mov', 'lancamento', 'lançamento'],
-    description: ['descric', 'descrição', 'historico', 'histórico', 'descricao', 'lancamento', 'lançamento', 'memo', 'detalhe', 'complemento', 'observacao', 'observação'],
-    amount: ['valor', 'valor r$', 'vlr', 'montante', 'importancia', 'importância'],
-    credit: ['credito', 'crédito', 'entrada', 'entradas', 'depos', 'depósito', 'deposito', 'receitas'],
-    debit: ['debito', 'débito', 'saida', 'saída', 'saidas', 'saídas', 'saque', 'pagamento', 'despesa'],
-    balance: ['saldo', 'saldo r$', 'saldo atual', 'saldo em conta'],
-    document: ['doc', 'documento', 'numero doc', 'número doc', 'nº doc', 'referencia', 'referência', 'fitid', 'txid', 'nº operação', 'nº operacao'],
-    trntype: ['tipo', 'tp', 'operacao', 'operação', 'natureza'],
-  };
-
-  for (const sheetName of workbook.SheetNames) {
-    const sheet = workbook.Sheets[sheetName];
-    // AOA: array de arrays; cada linha é um array de células
-    // raw:true retorna números puros (não strings formatadas) — essencial para valores monetários
-    const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: true });
-    if (!aoa || aoa.length < 2) continue;
-
-    // Procura linha de cabeçalho: varre as primeiras 20 linhas em busca de aquela
-    // que tem mais matches de keywords
-    let bestHeaderRow = -1;
-    let bestScore = 0;
-    let bestMapping = null;
-    const maxScan = Math.min(20, aoa.length);
-
-    for (let r = 0; r < maxScan; r++) {
-      const row = aoa[r];
-      if (!row || row.length < 2) continue;
-      const mapping = matchColumns(row, KEYWORDS);
-      const score = countMappingHits(mapping);
-      if (score > bestScore) {
-        bestScore = score;
-        bestHeaderRow = r;
-        bestMapping = mapping;
-      }
-    }
-
-    // Consideramos válido apenas se tiver pelo menos: data + (valor OU crédito+débito) + descrição
-    if (bestHeaderRow < 0 || !bestMapping) continue;
-    const hasDate = bestMapping.date >= 0;
-    const hasDesc = bestMapping.description >= 0;
-    const hasAmount = bestMapping.amount >= 0 || (bestMapping.credit >= 0 && bestMapping.debit >= 0);
-    if (!hasDate || !hasDesc || !hasAmount) continue;
-
-    // Extrai transações a partir da linha seguinte
-    const transactions = buildTransactionsFromAOA(aoa, bestHeaderRow, bestMapping);
-    if (transactions.length === 0) continue;
-
-    const accountInfo = buildExcelAccountInfo(transactions, workbook, sheetName);
-    return { accountInfo, transactions, sheetName, headerRow: bestHeaderRow };
-  }
-
-  return null;
-}
-
-/**
- * Retorna um objeto de mapping { date, description, amount, credit, debit, balance, document, trntype }
- * com o índice da coluna correspondente (ou -1 se não encontrou).
- */
-function matchColumns(headerRow, keywords) {
-  const mapping = {
-    date: -1, description: -1, amount: -1, credit: -1, debit: -1,
-    balance: -1, document: -1, trntype: -1,
-  };
-  const norm = (s) => String(s || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9 ]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const normHeaders = headerRow.map(norm);
-
-  for (const field of Object.keys(mapping)) {
-    const kws = keywords[field].map(norm);
-    let bestIdx = -1;
-    let bestLen = 0;
-    for (let i = 0; i < normHeaders.length; i++) {
-      const cell = normHeaders[i];
-      if (!cell) continue;
-      for (const kw of kws) {
-        // match: header contém keyword OU keyword contém header (para variações curtas)
-        if (cell === kw || cell.startsWith(kw + ' ') || cell.endsWith(' ' + kw) || cell.includes(' ' + kw + ' ') || cell === kw) {
-          if (kw.length > bestLen) {
-            bestIdx = i;
-            bestLen = kw.length;
-          }
-        } else if (cell.includes(kw) && kw.length >= 4) {
-          // match parcial só para keywords maiores (evita "dt" matching qualquer coisa)
-          if (kw.length > bestLen) {
-            bestIdx = i;
-            bestLen = kw.length;
-          }
-        }
-      }
-    }
-    mapping[field] = bestIdx;
-  }
-
-  // Ambiguidade: se amount e credit apontam pra mesma coluna, priorize credit
-  if (mapping.amount >= 0 && mapping.amount === mapping.credit) mapping.amount = -1;
-  if (mapping.amount >= 0 && mapping.amount === mapping.debit) mapping.amount = -1;
-  if (mapping.description >= 0 && mapping.description === mapping.date) mapping.description = -1;
-
-  return mapping;
-}
-
-function countMappingHits(mapping) {
-  let n = 0;
-  for (const k of Object.keys(mapping)) if (mapping[k] >= 0) n++;
-  return n;
-}
-
-/**
- * Constrói o array de transações a partir do AOA da planilha e do mapeamento de colunas.
- */
-function buildTransactionsFromAOA(aoa, headerRow, mapping) {
-  const transactions = [];
-  let counter = 0;
-  for (let r = headerRow + 1; r < aoa.length; r++) {
-    const row = aoa[r];
-    if (!row || row.length === 0) continue;
-
-    // Pega valores
-    const rawDate = mapping.date >= 0 ? row[mapping.date] : '';
-    const rawDesc = mapping.description >= 0 ? row[mapping.description] : '';
-
-    // Ignora linhas totalmente vazias, ou linhas de totalização (ex.: "SALDO ANTERIOR", "TOTAL")
-    if (!rawDate && !rawDesc) continue;
-    const descStr = String(rawDesc || '').trim();
-    if (!descStr && !rawDate) continue;
-    const descUpper = descStr.toUpperCase();
-    if (/^(SALDO\s+(ANTERIOR|ATUAL|DO\s+DIA|BLOQUEADO)|TOTAL(\s+GERAL)?|SUBTOTAL)$/.test(descUpper)) continue;
-
-    // Data
-    const date = parseExcelDate(rawDate);
-    if (!date) continue; // sem data válida, pula
-
-    // Valor (com sinal) — parseBRNumber pode retornar null; coerce pra 0
-    let amount = 0;
-    if (mapping.amount >= 0) {
-      amount = parseBRNumber(row[mapping.amount]) || 0;
-    } else if (mapping.credit >= 0 || mapping.debit >= 0) {
-      const cred = mapping.credit >= 0 ? Math.abs(parseBRNumber(row[mapping.credit]) || 0) : 0;
-      const deb = mapping.debit >= 0 ? Math.abs(parseBRNumber(row[mapping.debit]) || 0) : 0;
-      if (cred > 0) amount = cred;
-      else if (deb > 0) amount = -deb;
-    }
-
-    if (!amount || amount === 0) {
-      // linha sem valor → pula (provavelmente linha de saldo/subtotal)
-      continue;
-    }
-
-    counter++;
-    const id = 'XL' + counter + '_' + (Math.floor(date.getTime() / 1000));
-    const doc = mapping.document >= 0 ? String(row[mapping.document] || '').trim() : '';
-    const trnType = mapping.trntype >= 0 ? String(row[mapping.trntype] || '').trim().toUpperCase() : (amount >= 0 ? 'CREDIT' : 'DEBIT');
-    const balanceRaw = mapping.balance >= 0 ? parseBRNumber(row[mapping.balance]) : null;
-    const balance = (balanceRaw === null || isNaN(balanceRaw)) ? null : balanceRaw;
-
-    const t = {
-      id: id,
-      date: date,
-      type: amount >= 0 ? 'credit' : 'debit',
-      trnType: trnType || (amount >= 0 ? 'CREDIT' : 'DEBIT'),
-      description: descStr || (amount >= 0 ? 'Crédito' : 'Débito'),
-      memo: descStr,
-      name: '',
-      document: doc,
-      amount: amount,
-      absAmount: Math.abs(amount),
-      counterparty: '',
-      counterpartyName: '',
-      counterpartyAccount: '',
-      counterpartyBank: '',
-      counterpartyBranch: '',
-      isReversal: false,
-      reversalReason: '',
-      correctFitId: '',
-      correctAction: '',
-      reversalRecipient: '',
-      reversalOriginalDate: null,
-      reversalOriginalAmount: null,
-      reversalOriginalDescription: '',
-      balanceBefore: null,
-      balanceAfter: balance,
-      _rawBalance: balance,
-    };
-
-    // Detecção heurística de estorno: só marca como estorno se detectReversalReason
-    // achar um match de palavra-chave (não podemos passar correctFitId senão sempre retorna algo)
-    const upperDesc = descStr.toUpperCase();
-    const hasReversalKeyword = /ESTORNO|DEVOLU[ÇC][ÃA]O|DEVOLVID|REEMBOLSO|CANCELAMENTO|CANCELAD|CHARGEBACK|RESSARCIMENTO|REVERS[AÃ]O|REVERSAL/.test(upperDesc);
-    if (hasReversalKeyword) {
-      t.isReversal = true;
-      t.reversalReason = detectReversalReason(descStr, '', '');
-      t.reversalRecipient = extractReversalRecipient(descStr, '') || '';
-    }
-
-    // Extrai contraparte a partir da descrição (usa a mesma função do parser OFX,
-    // passando bloco vazio para forçar fallback heurístico sobre MEMO/NAME)
-    try {
-      const cp = extractCounterparty('', descStr, '');
-      if (cp) {
-        t.counterparty = cp.label || '';
-        t.counterpartyName = cp.name || '';
-        t.counterpartyAccount = cp.account || '';
-        t.counterpartyBank = cp.bank || '';
-        t.counterpartyBranch = cp.branch || '';
-      }
-    } catch (e) { /* ignora falha na extração de contraparte */ }
-    // Fallback: se não achou contraparte, use primeiras palavras da descrição como nome
-    if (!t.counterpartyName && descStr) {
-      const clean = descStr.replace(/^(PIX|TED|DOC|TRANSFERENCIA|TRANSFERÊNCIA|PAGAMENTO|COMPRA|SAQUE|DEPOSITO|DEPÓSITO|ESTORNO|DEVOLUCAO|DEVOLUÇÃO)\s+(ENVIADO|RECEBIDO|EFETUADO|EFETUADA|DE|PARA|A|AO|DA|DO)?\s*/i, '').trim();
-      if (clean) {
-        t.counterpartyName = clean.split(/\s+/).slice(0, 4).join(' ').substring(0, 60);
-        t.counterparty = t.counterpartyName;
-      }
-    }
-
-    transactions.push(t);
-  }
-
-  // Ordena por data crescente
-  transactions.sort((a, b) => a.date - b.date);
-
-  // Calcula balanceBefore/After quando temos o saldo em cada linha
-  computeBalanceForExcelTransactions(transactions);
-
-  return transactions;
-}
-
-/**
- * Se tivermos saldo em cada linha (balanceAfter conhecido), preencher balanceBefore.
- * Se não tivermos, deixa null (a UI já lida com isso).
- */
-function computeBalanceForExcelTransactions(transactions) {
-  for (let i = 0; i < transactions.length; i++) {
-    const t = transactions[i];
-    if (t._rawBalance !== null && t._rawBalance !== undefined && !isNaN(t._rawBalance)) {
-      t.balanceAfter = t._rawBalance;
-      t.balanceBefore = t._rawBalance - t.amount;
-    } else if (i > 0 && transactions[i - 1].balanceAfter !== null) {
-      // encadeamento a partir do saldo da linha anterior
-      t.balanceBefore = transactions[i - 1].balanceAfter;
-      t.balanceAfter = t.balanceBefore + t.amount;
-    }
-    delete t._rawBalance;
-  }
-}
-
-/**
- * Parse de data vinda de célula Excel. Aceita:
- *   - Date objects (quando cellDates:true funcionou)
- *   - Strings em formato BR (dd/mm/yyyy, dd/mm/yy, dd-mm-yyyy)
- *   - Strings em formato ISO (yyyy-mm-dd)
- *   - Números serial do Excel
- */
-function parseExcelDate(value) {
-  if (!value && value !== 0) return null;
-  if (value instanceof Date) {
-    if (isNaN(value.getTime())) return null;
-    return value;
-  }
-  // Número serial do Excel (dias desde 1900-01-01)
-  if (typeof value === 'number' && isFinite(value) && value > 0) {
-    // Converte serial Excel → JS Date (offset de 25569 dias do Unix + bug do ano 1900)
-    const utcDays = Math.floor(value - 25569);
-    const utcSecs = Math.round((value - 25569 - utcDays) * 86400);
-    const d = new Date(utcDays * 86400 * 1000 + utcSecs * 1000);
-    if (isNaN(d.getTime())) return null;
-    return d;
-  }
-  const s = String(value).trim();
-  if (!s) return null;
-
-  // dd/mm/yyyy ou dd/mm/yy
-  let m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
-  if (m) {
-    let day = parseInt(m[1], 10);
-    let month = parseInt(m[2], 10);
-    let year = parseInt(m[3], 10);
-    if (year < 100) year += year < 50 ? 2000 : 1900;
-    const hh = m[4] ? parseInt(m[4], 10) : 0;
-    const mm = m[5] ? parseInt(m[5], 10) : 0;
-    const ss = m[6] ? parseInt(m[6], 10) : 0;
-    const d = new Date(year, month - 1, day, hh, mm, ss);
-    if (!isNaN(d.getTime())) return d;
-  }
-
-  // yyyy-mm-dd
-  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[\sT](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
-  if (m) {
-    const d = new Date(
-      parseInt(m[1], 10),
-      parseInt(m[2], 10) - 1,
-      parseInt(m[3], 10),
-      m[4] ? parseInt(m[4], 10) : 0,
-      m[5] ? parseInt(m[5], 10) : 0,
-      m[6] ? parseInt(m[6], 10) : 0
-    );
-    if (!isNaN(d.getTime())) return d;
-  }
-
-  // Fallback: Date.parse
-  const parsed = new Date(s);
-  if (!isNaN(parsed.getTime())) return parsed;
-  return null;
-}
-
-/**
- * Constrói accountInfo sintético a partir das transações Excel.
- * Excel geralmente não tem cabeçalho estruturado com banco/agência/conta.
- * Tenta descobrir a partir do nome do arquivo ou nome da aba.
- */
-function buildExcelAccountInfo(transactions, workbook, sheetName) {
-  const dates = transactions.map(t => t.date).filter(d => d instanceof Date);
-  const startDate = dates.length ? new Date(Math.min(...dates.map(d => d.getTime()))) : null;
-  const endDate = dates.length ? new Date(Math.max(...dates.map(d => d.getTime()))) : null;
-  // Saldo final: usa último balanceAfter conhecido, ou soma cumulativa
-  let balance = 0;
-  const last = transactions[transactions.length - 1];
-  if (last && last.balanceAfter !== null && last.balanceAfter !== undefined) {
-    balance = last.balanceAfter;
-  } else {
-    balance = transactions.reduce((acc, t) => acc + t.amount, 0);
-  }
-
-  return {
-    bankId: '',
-    branchId: '',
-    accountId: sheetName || '',
-    accountType: 'CHECKING',
-    currency: 'BRL',
-    startDate: startDate,
-    endDate: endDate,
-    balance: balance,
-    balanceDate: endDate,
-    source: 'Excel: ' + (excelState.fileName || 'planilha'),
-  };
-}
-
-/* ---------------- Modal de mapeamento manual ---------------- */
-
-function openExcelMappingModal(defaultSheet) {
-  const modal = document.getElementById('excel-mapping-modal');
-  if (!modal) {
-    showError('Modal de mapeamento não encontrado.');
-    return;
-  }
-  const workbook = excelState.workbook;
-
-  // Popula sheets
-  const sheetSelect = document.getElementById('excel-sheet-select');
-  sheetSelect.innerHTML = '';
-  workbook.SheetNames.forEach(name => {
-    const opt = document.createElement('option');
-    opt.value = name;
-    opt.textContent = name;
-    sheetSelect.appendChild(opt);
-  });
-  sheetSelect.value = defaultSheet || workbook.SheetNames[0];
-
-  // Reset header row
-  document.getElementById('excel-header-row').value = '1';
-
-  refreshExcelMappingUI();
-
-  modal.classList.remove('hidden');
-  document.getElementById('excel-mapping-subtitle').textContent =
-    'Não foi possível detectar automaticamente. Selecione as colunas manualmente.';
-
-  // ESC handler
-  const escHandler = (e) => {
-    if (e.key === 'Escape') closeExcelMappingModal();
-  };
-  document.addEventListener('keydown', escHandler);
-  modal._escHandler = escHandler;
-}
-
-function closeExcelMappingModal() {
-  const modal = document.getElementById('excel-mapping-modal');
-  if (!modal) return;
-  modal.classList.add('hidden');
-  if (modal._escHandler) {
-    document.removeEventListener('keydown', modal._escHandler);
-    modal._escHandler = null;
-  }
-}
-
-/**
- * Lê os dados da aba selecionada + linha de cabeçalho configurada,
- * popula os dropdowns de mapeamento e a prévia.
- */
-function refreshExcelMappingUI() {
-  const sheetName = document.getElementById('excel-sheet-select').value;
-  const headerRow = Math.max(1, parseInt(document.getElementById('excel-header-row').value, 10) || 1);
-  excelState.sheetName = sheetName;
-  excelState.headerRow = headerRow;
-
-  const sheet = excelState.workbook.Sheets[sheetName];
-  const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: true });
-  excelState.rows = aoa;
-
-  const headerIdx = headerRow - 1;
-  const headers = (aoa[headerIdx] || []).map((h, i) => {
-    const letter = XLSX.utils.encode_col(i);
-    const label = String(h || '').trim() || '(vazio)';
-    return { idx: i, label: label + ' [' + letter + ']' };
-  });
-  excelState.headers = headers;
-
-  // Tenta auto-detect para pré-selecionar os dropdowns
-  const KEYWORDS = {
-    date: ['data', 'data mov', 'data movimento', 'data lanc', 'data lancamento', 'dt', 'dt.', 'dt mov', 'lancamento', 'lançamento'],
-    description: ['descric', 'descrição', 'historico', 'histórico', 'descricao', 'lancamento', 'lançamento', 'memo', 'detalhe', 'complemento', 'observacao', 'observação'],
-    amount: ['valor', 'valor r$', 'vlr', 'montante'],
-    credit: ['credito', 'crédito', 'entrada', 'entradas'],
-    debit: ['debito', 'débito', 'saida', 'saída', 'saidas', 'saídas'],
-    balance: ['saldo', 'saldo r$', 'saldo atual'],
-    document: ['doc', 'documento', 'referencia', 'referência', 'fitid', 'txid'],
-    trntype: ['tipo', 'tp', 'operacao', 'operação', 'natureza'],
-  };
-  const detected = matchColumns(aoa[headerIdx] || [], KEYWORDS);
-
-  const fields = ['date', 'description', 'amount', 'credit', 'debit', 'balance', 'document', 'trntype'];
-  fields.forEach(f => {
-    const sel = document.getElementById('map-col-' + f);
-    sel.innerHTML = '<option value="-1">— (não usar) —</option>';
-    headers.forEach(h => {
-      const opt = document.createElement('option');
-      opt.value = String(h.idx);
-      opt.textContent = h.label;
-      sel.appendChild(opt);
-    });
-    sel.value = String(detected[f] !== undefined ? detected[f] : -1);
-  });
-
-  // Contadores
-  document.getElementById('excel-rows-count').textContent = String(Math.max(0, aoa.length - headerRow));
-  document.getElementById('excel-cols-count').textContent = String(headers.length);
-
-  // Prévia (10 primeiras linhas de dados)
-  renderExcelPreview(aoa, headerIdx);
-}
-
-function renderExcelPreview(aoa, headerIdx) {
-  const body = document.getElementById('excel-preview-body');
-  if (!body) return;
-  const headers = aoa[headerIdx] || [];
-  const dataRows = aoa.slice(headerIdx + 1, headerIdx + 11);
-  const maxCols = Math.max(headers.length, ...dataRows.map(r => (r || []).length));
-
-  let html = '<div class="overflow-x-auto rounded border border-gray-200 dark:border-slate-700"><table class="min-w-full text-xs"><thead class="bg-gray-100 dark:bg-slate-900 sticky top-0"><tr>';
-  html += '<th class="px-2 py-1 text-left text-gray-500 dark:text-slate-400 border-b border-gray-200 dark:border-slate-700">#</th>';
-  for (let c = 0; c < maxCols; c++) {
-    const letter = XLSX.utils.encode_col(c);
-    const label = String(headers[c] || '').trim() || '(vazio)';
-    html += '<th class="px-2 py-1 text-left text-gray-700 dark:text-slate-200 border-b border-gray-200 dark:border-slate-700 whitespace-nowrap"><span class="text-[10px] text-gray-400 dark:text-slate-500">[' + letter + ']</span> ' + escapeHtml(label) + '</th>';
-  }
-  html += '</tr></thead><tbody>';
-  dataRows.forEach((row, idx) => {
-    html += '<tr class="' + (idx % 2 === 0 ? 'bg-white dark:bg-slate-800' : 'bg-gray-50 dark:bg-slate-900/40') + '">';
-    html += '<td class="px-2 py-1 text-gray-400 dark:text-slate-500">' + (headerIdx + 2 + idx) + '</td>';
-    for (let c = 0; c < maxCols; c++) {
-      const val = (row || [])[c];
-      html += '<td class="px-2 py-1 text-gray-700 dark:text-slate-300 whitespace-nowrap max-w-[200px] overflow-hidden text-ellipsis" title="' + escapeHtml(String(val || '')) + '">' + escapeHtml(String(val || '')) + '</td>';
-    }
-    html += '</tr>';
-  });
-  if (aoa.length > headerIdx + 11) {
-    html += '<tr><td colspan="' + (maxCols + 1) + '" class="px-2 py-2 text-center text-xs text-gray-400 dark:text-slate-500 italic">... e mais ' + (aoa.length - headerIdx - 11) + ' linhas</td></tr>';
-  }
-  html += '</tbody></table></div>';
-  body.innerHTML = html;
-}
-
-function confirmExcelMapping() {
-  const mapping = {
-    date: parseInt(document.getElementById('map-col-date').value, 10),
-    description: parseInt(document.getElementById('map-col-description').value, 10),
-    amount: parseInt(document.getElementById('map-col-amount').value, 10),
-    credit: parseInt(document.getElementById('map-col-credit').value, 10),
-    debit: parseInt(document.getElementById('map-col-debit').value, 10),
-    balance: parseInt(document.getElementById('map-col-balance').value, 10),
-    document: parseInt(document.getElementById('map-col-document').value, 10),
-    trntype: parseInt(document.getElementById('map-col-trntype').value, 10),
-  };
-
-  // Validação
-  if (mapping.date < 0) {
-    alert('Selecione a coluna de Data');
-    return;
-  }
-  if (mapping.description < 0) {
-    alert('Selecione a coluna de Descrição / Histórico');
-    return;
-  }
-  if (mapping.amount < 0 && (mapping.credit < 0 && mapping.debit < 0)) {
-    alert('Selecione uma coluna de Valor OU as colunas de Crédito e Débito');
-    return;
-  }
-
-  const headerIdx = excelState.headerRow - 1;
-  const transactions = buildTransactionsFromAOA(excelState.rows, headerIdx, mapping);
-  if (transactions.length === 0) {
-    alert('Nenhuma transação válida foi encontrada com esse mapeamento. Verifique os campos selecionados.');
-    return;
-  }
-
-  const accountInfo = buildExcelAccountInfo(transactions, excelState.workbook, excelState.sheetName);
-  closeExcelMappingModal();
-  finalizeImport(accountInfo, transactions, 'Excel');
 }
 
 /**
@@ -1804,8 +1161,6 @@ function normalizeText(text) {
  */
 function parseBRNumber(str) {
   if (str === null || str === undefined) return null;
-  // Passthrough: se já é number válido (do Excel raw), retorna direto
-  if (typeof str === 'number') return isFinite(str) ? str : null;
   let s = String(str).trim();
   if (!s) return null;
   // Remove símbolos de moeda e espaços
@@ -1816,27 +1171,11 @@ function parseBRNumber(str) {
   const hasDot = s.includes('.');
 
   if (hasComma && hasDot) {
-    // Ambos presentes: precisa decidir se é BR (5.000,00) ou US (5,000.00)
-    // Regra: qual dos dois aparece por último é o SEPARADOR DECIMAL
-    const lastComma = s.lastIndexOf(',');
-    const lastDot = s.lastIndexOf('.');
-    if (lastComma > lastDot) {
-      // BR: vírgula é decimal, ponto é milhar
-      s = s.replace(/\./g, '').replace(',', '.');
-    } else {
-      // US: ponto é decimal, vírgula é milhar
-      s = s.replace(/,/g, '');
-    }
+    // Ambos presentes: vírgula é decimal, ponto é milhar (padrão BR)
+    s = s.replace(/\./g, '').replace(',', '.');
   } else if (hasComma) {
-    // Só vírgula: decimal BR (ou milhar US, mas sem decimal → tratamos como BR decimal)
-    // Se a vírgula tem exatamente 3 dígitos depois e é única, é milhar US (ex.: "5,000")
-    const parts = s.split(',');
-    if (parts.length === 2 && parts[1].length === 3 && parts[0].length <= 3) {
-      // Ambíguo mas plausível como milhar US (5,000) — remove
-      s = s.replace(/,/g, '');
-    } else {
-      s = s.replace(/,/g, '.');
-    }
+    // Só vírgula: decimal BR
+    s = s.replace(',', '.');
   } else if (hasDot) {
     // Só ponto: pode ser decimal (10.50) ou milhar (10.000)
     // Se tem mais de um ponto ou o segmento após o último ponto tem 3 dígitos, é milhar
@@ -3209,23 +2548,4 @@ document.addEventListener('DOMContentLoaded', () => {
       if (label) label.textContent = isCollapsed ? 'Expandir' : 'Recolher';
     });
   });
-
-  // === Modal de mapeamento de colunas do Excel ===
-  const excelMappingModal = document.getElementById('excel-mapping-modal');
-  const excelMappingClose = document.getElementById('excel-mapping-close');
-  const excelMappingCancel = document.getElementById('excel-mapping-cancel');
-  const excelMappingConfirm = document.getElementById('excel-mapping-confirm');
-  const excelSheetSelect = document.getElementById('excel-sheet-select');
-  const excelHeaderRow = document.getElementById('excel-header-row');
-
-  if (excelMappingClose) excelMappingClose.addEventListener('click', closeExcelMappingModal);
-  if (excelMappingCancel) excelMappingCancel.addEventListener('click', closeExcelMappingModal);
-  if (excelMappingConfirm) excelMappingConfirm.addEventListener('click', confirmExcelMapping);
-  if (excelMappingModal) {
-    excelMappingModal.addEventListener('click', (e) => {
-      if (e.target === excelMappingModal) closeExcelMappingModal();
-    });
-  }
-  if (excelSheetSelect) excelSheetSelect.addEventListener('change', refreshExcelMappingUI);
-  if (excelHeaderRow) excelHeaderRow.addEventListener('change', refreshExcelMappingUI);
 });

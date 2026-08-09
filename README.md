@@ -1,37 +1,23 @@
-# Leitor de Extrato Bancário — OFX & Excel
+# Leitor de Extrato Bancário OFX
 
 ## Visão Geral
-- **Nome**: Leitor de Extrato Bancário
-- **Objetivo**: Sistema web para leitura e análise de extratos bancários em **OFX** (Open Financial Exchange) e **Excel** (.xlsx/.xls)
+- **Nome**: Leitor de Extrato OFX
+- **Objetivo**: Sistema web para leitura e análise de extratos bancários em formato OFX (Open Financial Exchange), padrão usado por bancos brasileiros
 - **Diferencial**: Processamento 100% local no navegador — nenhum dado bancário é enviado para servidores
-- **Formatos futuros**: PDF (texto) e CNAB estão no roadmap
 
-> **Nota sobre o formato original**: A solicitação inicial mencionava "pfx", porém PFX é formato de certificado digital. O formato correto para extratos bancários é **OFX** (Open Financial Exchange), que é o adotado pela maioria dos bancos brasileiros para exportação de extratos. Adicionalmente, agora aceitamos planilhas Excel.
+> **Nota sobre o formato**: A solicitação original mencionava "pfx", porém PFX é formato de certificado digital. O formato correto para extratos bancários é **OFX** (Open Financial Exchange), que é o adotado pela maioria dos bancos brasileiros para exportação de extratos.
 
 ## URLs
 - **Sandbox (desenvolvimento)**: https://3000-ieuqgzbrndccyipebk6dr-b237eb32.sandbox.novita.ai
 - **Arquivo OFX de exemplo**: `/exemplo.ofx` (download disponível para teste)
-- **Arquivo Excel de exemplo**: `/exemplo.xlsx` (download disponível para teste)
 - **Produção**: (não deployado ainda)
 
 ## Funcionalidades Implementadas
 
-### 📤 Upload Multi-Formato
+### 📤 Upload
 - Upload por drag-and-drop ou seleção manual
-- Roteamento automático de parser pela extensão do arquivo
-- **OFX** (.ofx):
-  - Detecção automática de encoding (UTF-8, windows-1252, ISO-8859-1)
-  - Suporte a OFX SGML (v1.x) e XML (v2.x)
-- **Excel** (.xlsx / .xls / .xlsm / .xlsb):
-  - Auto-detecção de colunas por keywords em português (Data, Histórico, Valor, Débito, Crédito, Saldo, etc.)
-  - Suporta layouts com **Valor único (com sinal)** ou **Crédito/Débito em colunas separadas**
-  - Detecta linha de cabeçalho automaticamente varrendo as primeiras 20 linhas
-  - Ignora linhas de totalização (SALDO ANTERIOR, TOTAL, SUBTOTAL, etc.)
-  - Testa múltiplas abas e escolhe a que tem estrutura de extrato
-  - **Fallback manual**: se a auto-detecção falhar, abre modal onde o usuário mapeia cada coluna
-  - Extrai contrapartes por heurística sobre a descrição (mesma lógica do OFX)
-  - Detecta estornos por palavras-chave (ESTORNO, DEVOLUÇÃO, REEMBOLSO, etc.) na descrição
-- **PDF / CNAB**: em breve (roadmap)
+- Detecção automática de encoding ISO-8859-1 (padrão dos bancos brasileiros)
+- Suporte a OFX SGML (v1.x) e XML (v2.x)
 
 ### 🌓 Tema Claro / Escuro
 - Alternância entre modo claro e escuro pelo botão no cabeçalho (ícone lua/sol)
@@ -215,12 +201,11 @@ Isso resolve o problema de textos aparecerem corrompidos (ex.: "DÃ‰BITO" em v
 | Método | Rota                | Descrição                                    |
 |--------|---------------------|----------------------------------------------|
 | GET    | `/`                 | Página principal (SPA de análise de extratos)|
-| GET    | `/static/app.js`    | JavaScript do frontend (parsers + UI)        |
+| GET    | `/static/app.js`    | JavaScript do frontend (parser + UI)         |
 | GET    | `/static/style.css` | Estilos customizados                         |
 | GET    | `/exemplo.ofx`      | Arquivo OFX de exemplo para testes           |
-| GET    | `/exemplo.xlsx`     | Arquivo Excel de exemplo para testes         |
 
-Não há endpoints de API — todo o processamento (OFX e Excel) ocorre client-side por questões de segurança.
+Não há endpoints de API — todo o processamento OFX ocorre client-side por questões de segurança.
 
 ## Arquitetura de Dados
 
@@ -295,14 +280,13 @@ Não há endpoints de API — todo o processamento (OFX e Excel) ocorre client-s
 
 ## Recursos Ainda Não Implementados
 
-- 🔲 Suporte a **PDF** (texto) — próximo formato do roadmap; irá usar pdf.js com heurísticas de reconstrução de tabela
-- 🔲 Suporte a **CNAB 240 extrato** (leiautes de Itaú, BB, Bradesco, Santander, Caixa)
 - 🔲 Categorização automática de transações (mercado, transporte, lazer, etc.)
 - 🔲 Comparação entre múltiplos extratos (mês vs mês)
 - 🔲 Detecção de transações recorrentes (assinaturas, contas fixas)
 - 🔲 Persistência opcional (IndexedDB) para o usuário não precisar reenviar o arquivo
+- 🔲 Suporte a arquivos CSV/TXT de outros formatos
 - 🔲 Detecção e alertas de gastos incomuns
-- 🔲 Exportação em Excel .xlsx e JSON
+- 🔲 Exportação em outros formatos (Excel .xlsx, JSON)
 
 ## Próximos Passos Recomendados
 
@@ -315,8 +299,8 @@ Não há endpoints de API — todo o processamento (OFX e Excel) ocorre client-s
 ## Deploy
 - **Plataforma**: Cloudflare Pages
 - **Status**: 🚧 Rodando em sandbox de desenvolvimento
-- **Stack**: Hono + TypeScript + Vite + TailwindCSS + Chart.js + jsPDF + SheetJS
-- **Última atualização**: 2026-08-09 (Turn 7 — suporte a leitura de arquivos Excel .xlsx/.xls com auto-detecção de colunas + fallback manual)
+- **Stack**: Hono + TypeScript + Vite + TailwindCSS + Chart.js
+- **Última atualização**: 2026-08-09 (Turn 6 — botão exclusivo estorno, colunas de destinatário, modal de prévia, PDF profissional, fix modo claro)
 
 ## Comandos Úteis
 
