@@ -28,10 +28,17 @@
 
 ### 🔍 Filtros Personalizados
 - **Por tipo**: Todas / Somente Créditos / Somente Débitos
-- **Por período**: Data inicial e final
+- **Por período**: Data e **hora** inicial/final (precisão de minuto)
 - **Por descrição**: Busca textual (PIX, TED, salário, etc.)
+- **Por conta destino/origem**: Busca pelo nome, banco, agência ou número da conta contraparte (com autocomplete)
 - **Por valor**: Valor mínimo e máximo
 - **Ordenação**: Data (crescente/decrescente), Valor (crescente/decrescente), Descrição (A-Z)
+
+### 📄 Paginação
+- Seleção de 100, 500 ou 1000 transações por página
+- Navegação: Primeira / Anterior / Próxima / Última
+- Indicador de página atual e total de itens exibidos
+- Totalizadores e estatísticas sempre refletem TODAS as transações filtradas, não apenas a página visível
 
 ### 📈 Visualizações
 - Gráfico de barras diário (créditos vs débitos) usando Chart.js
@@ -60,7 +67,7 @@ Não há endpoints de API — todo o processamento OFX ocorre client-side por qu
 ```typescript
 {
   id: string,          // FITID do OFX
-  date: Date,          // DTPOSTED
+  date: Date,          // DTPOSTED (com hora quando disponível)
   type: 'credit'|'debit', // baseado no sinal do TRNAMT
   trnType: string,     // TRNTYPE (CREDIT, DEBIT, PIX, XFER, etc)
   description: string, // MEMO + NAME
@@ -68,9 +75,20 @@ Não há endpoints de API — todo o processamento OFX ocorre client-side por qu
   name: string,        // NAME original
   document: string,    // CHECKNUM ou REFNUM
   amount: number,      // valor com sinal
-  absAmount: number    // valor absoluto
+  absAmount: number,   // valor absoluto
+  // Contraparte (destino em débitos, origem em créditos)
+  counterparty: string,        // rótulo consolidado ex: "JOÃO SILVA · Bco 260 Ag 0001 Cc 44556-7"
+  counterpartyName: string,    // apenas o nome
+  counterpartyAccount: string, // número da conta (ACCTID de <BANKACCTTO>)
+  counterpartyBank: string,    // BANKID
+  counterpartyBranch: string   // BRANCHID
 }
 ```
+
+**Fontes de extração da contraparte** (por ordem de prioridade):
+1. Bloco estruturado `<BANKACCTTO>` / `<CCACCTTO>` do padrão OFX
+2. Bloco `<PAYEE>` ou tag `<PAYEEID>` (beneficiário)
+3. Heurística sobre `MEMO`/`NAME` — captura padrões brasileiros como "AG 1234 CC 56789-0", "BCO 260", "PIX ENVIADO NOME DA PESSOA"
 
 ### Modelo de Conta
 ```typescript

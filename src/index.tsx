@@ -144,21 +144,23 @@ app.get('/', (c) => {
               </div>
               <div>
                 <label class="block text-xs font-semibold text-gray-600 mb-1">
-                  Data Inicial
+                  Data/Hora Inicial
                 </label>
                 <input
-                  type="date"
+                  type="datetime-local"
                   id="filter-start"
+                  step="60"
                   class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
               <div>
                 <label class="block text-xs font-semibold text-gray-600 mb-1">
-                  Data Final
+                  Data/Hora Final
                 </label>
                 <input
-                  type="date"
+                  type="datetime-local"
                   id="filter-end"
+                  step="60"
                   class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
@@ -172,6 +174,19 @@ app.get('/', (c) => {
                   placeholder="Ex: PIX, TED, salário..."
                   class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-gray-600 mb-1">
+                  Conta Destino/Origem
+                </label>
+                <input
+                  type="text"
+                  id="filter-counterparty"
+                  list="counterparty-list"
+                  placeholder="Nome, agência ou conta..."
+                  class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+                <datalist id="counterparty-list"></datalist>
               </div>
               <div>
                 <label class="block text-xs font-semibold text-gray-600 mb-1">
@@ -231,7 +246,7 @@ app.get('/', (c) => {
 
           {/* Transactions Table */}
           <div class="bg-white rounded-xl shadow-md overflow-hidden">
-            <div class="p-6 border-b border-gray-200 flex items-center justify-between flex-wrap gap-2">
+            <div class="p-6 border-b border-gray-200 flex items-center justify-between flex-wrap gap-3">
               <h2 class="text-lg font-bold text-gray-800">
                 <i class="fas fa-list-ul text-blue-600 mr-2"></i>Transações
                 <span
@@ -239,6 +254,17 @@ app.get('/', (c) => {
                   class="ml-2 text-sm font-normal text-gray-500"
                 ></span>
               </h2>
+              <div class="flex items-center gap-2">
+                <label class="text-xs font-semibold text-gray-600">Por página:</label>
+                <select
+                  id="page-size"
+                  class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="100">100</option>
+                  <option value="500">500</option>
+                  <option value="1000">1000</option>
+                </select>
+              </div>
             </div>
             <div class="overflow-x-auto">
               <table class="w-full">
@@ -254,6 +280,9 @@ app.get('/', (c) => {
                       Descrição
                     </th>
                     <th class="text-left px-4 py-3 text-xs font-semibold text-gray-600 uppercase">
+                      Conta Destino/Origem
+                    </th>
+                    <th class="text-left px-4 py-3 text-xs font-semibold text-gray-600 uppercase">
                       Documento
                     </th>
                     <th class="text-right px-4 py-3 text-xs font-semibold text-gray-600 uppercase">
@@ -264,7 +293,7 @@ app.get('/', (c) => {
                 <tbody id="transactions-tbody" class="divide-y divide-gray-100"></tbody>
                 <tfoot class="bg-gray-50 border-t-2 border-gray-200">
                   <tr>
-                    <td colspan="4" class="px-4 py-3 text-right font-semibold text-gray-700">
+                    <td colspan="5" class="px-4 py-3 text-right font-semibold text-gray-700">
                       Total filtrado:
                     </td>
                     <td id="filtered-total" class="px-4 py-3 text-right font-bold text-gray-900">
@@ -280,6 +309,45 @@ app.get('/', (c) => {
             >
               <i class="fas fa-inbox text-4xl mb-3"></i>
               <p>Nenhuma transação encontrada com os filtros aplicados.</p>
+            </div>
+
+            {/* Paginação */}
+            <div
+              id="pagination"
+              class="hidden border-t border-gray-200 px-6 py-4 flex items-center justify-between flex-wrap gap-3"
+            >
+              <div id="pagination-info" class="text-sm text-gray-600"></div>
+              <div class="flex items-center gap-1">
+                <button
+                  id="page-first"
+                  class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Primeira"
+                >
+                  <i class="fas fa-angle-double-left"></i>
+                </button>
+                <button
+                  id="page-prev"
+                  class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Anterior"
+                >
+                  <i class="fas fa-angle-left"></i>
+                </button>
+                <span id="page-indicator" class="px-3 py-1.5 text-sm font-medium text-gray-700"></span>
+                <button
+                  id="page-next"
+                  class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Próxima"
+                >
+                  <i class="fas fa-angle-right"></i>
+                </button>
+                <button
+                  id="page-last"
+                  class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Última"
+                >
+                  <i class="fas fa-angle-double-right"></i>
+                </button>
+              </div>
             </div>
           </div>
         </section>

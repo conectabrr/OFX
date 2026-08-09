@@ -8,6 +8,8 @@ const state = {
   filtered: [],
   accountInfo: {},
   chart: null,
+  currentPage: 1,
+  pageSize: 100,
 };
 
 // ============================================================
@@ -67,6 +69,9 @@ function parseOFX(content) {
     let memo = getTagValue(block, 'MEMO') || '';
     let name = getTagValue(block, 'NAME') || '';
 
+    // Conta de origem/destino (BANKACCTTO / CCACCTTO no padrão OFX)
+    const counterparty = extractCounterparty(block, memo, name);
+
     // Descrição consolidada
     let description = name || memo;
     if (name && memo && name !== memo) {
@@ -85,6 +90,11 @@ function parseOFX(content) {
       document: checkNum || refNum || fitId,
       amount: amount,
       absAmount: Math.abs(amount),
+      counterparty: counterparty.label,       // Ex: "JOÃO SILVA" ou "AG 1234 CC 56789-0"
+      counterpartyAccount: counterparty.account, // Ex: "56789-0"
+      counterpartyBank: counterparty.bank,       // Ex: "001"
+      counterpartyBranch: counterparty.branch,   // Ex: "1234"
+      counterpartyName: counterparty.name,       // Ex: "JOÃO SILVA"
     });
   }
 
@@ -101,6 +111,83 @@ function getTagValue(text, tag) {
   const regex = new RegExp(`<${tag}>([^<]*)<\/${tag}>`, 'i');
   const m = text.match(regex);
   return m ? m[1].trim() : '';
+}
+
+function getBlockValue(text, blockTag) {
+  const regex = new RegExp(`<${blockTag}>([\\s\\S]*?)<\/${blockTag}>`, 'i');
+  const m = text.match(regex);
+  return m ? m[1] : '';
+}
+
+/**
+ * Extrai a conta contraparte (destino em débito, origem em crédito).
+ *
+ * Fontes possíveis, em ordem de prioridade:
+ *  1. <BANKACCTTO> / <CCACCTTO> - blocos estruturados do padrão OFX
+ *  2. <PAYEEID> ou bloco <PAYEE> - dados do beneficiário
+ *  3. Heurística sobre MEMO/NAME - bancos brasileiros costumam colocar
+ *     dados como "AG 1234 CC 56789-0" ou "CPF/CNPJ ***.***.***-**"
+ */
+function extractCounterparty(block, memo, name) {
+  const result = { label: '', account: '', bank: '', branch: '', name: '' };
+
+  // 1. BANKACCTTO estruturado
+  const bankAcctTo = getBlockValue(block, 'BANKACCTTO');
+  if (bankAcctTo) {
+    result.bank = getTagValue(bankAcctTo, 'BANKID');
+    result.branch = getTagValue(bankAcctTo, 'BRANCHID');
+    result.account = getTagValue(bankAcctTo, 'ACCTID');
+  }
+  // Cartão de crédito destino
+  const ccAcctTo = getBlockValue(block, 'CCACCTTO');
+  if (ccAcctTo && !result.account) {
+    result.account = getTagValue(ccAcctTo, 'ACCTID');
+  }
+
+  // 2. Bloco PAYEE (beneficiário)
+  const payeeBlock = getBlockValue(block, 'PAYEE');
+  if (payeeBlock) {
+    result.name = getTagValue(payeeBlock, 'NAME') || result.name;
+  }
+  const payeeId = getTagValue(block, 'PAYEEID');
+  if (payeeId && !result.name) result.name = payeeId;
+
+  // 3. Heurística no MEMO / NAME (padrão brasileiro)
+  const source = `${memo} ${name}`;
+  if (!result.branch) {
+    const agMatch = source.match(/\bAG[.\s]*(\d{3,5})/i);
+    if (agMatch) result.branch = agMatch[1];
+  }
+  if (!result.account) {
+    const ccMatch = source.match(/\b(?:CC|C\/C|CONTA)[.\s]*([\d]{3,}[-.]?[\dxX]?)/i);
+    if (ccMatch) result.account = ccMatch[1];
+  }
+  if (!result.bank) {
+    const bcoMatch = source.match(/\b(?:BCO|BANCO)[.\s]*(\d{3})/i);
+    if (bcoMatch) result.bank = bcoMatch[1];
+  }
+
+  // 4. Nome extraído do memo: pega palavras após verbos comuns de transferência
+  if (!result.name) {
+    const nameMatch = source.match(
+      /(?:PIX|TED|DOC|TRANSF(?:ERENCIA)?|PAGAMENTO|PAGTO)\s+(?:ENVIADO|ENVIADA|RECEBIDO|RECEBIDA|CRED|DEB|PARA|A|DE)?\s*([A-ZÀ-Ú][A-ZÀ-Ú\s.]{2,60}?)(?:\s+(?:AG|CC|BCO|BANCO|CPF|CNPJ|-)|\s*$)/i
+    );
+    if (nameMatch) {
+      result.name = nameMatch[1].trim().replace(/\s+/g, ' ');
+    }
+  }
+
+  // Monta o rótulo final para exibição/filtro
+  const parts = [];
+  if (result.name) parts.push(result.name);
+  const acctParts = [];
+  if (result.bank) acctParts.push(`Bco ${result.bank}`);
+  if (result.branch) acctParts.push(`Ag ${result.branch}`);
+  if (result.account) acctParts.push(`Cc ${result.account}`);
+  if (acctParts.length) parts.push(acctParts.join(' '));
+  result.label = parts.join(' · ');
+
+  return result;
 }
 
 /**
@@ -142,9 +229,31 @@ function formatDate(date) {
   return date.toLocaleDateString('pt-BR');
 }
 
+/** Data + hora no formato brasileiro (DD/MM/YYYY HH:MM) */
+function formatDateTime(date) {
+  if (!date) return '-';
+  const d = date.toLocaleDateString('pt-BR');
+  const t = date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  return `${d} ${t}`;
+}
+
 function formatDateISO(date) {
   if (!date) return '';
-  return date.toISOString().split('T')[0];
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/** Formato YYYY-MM-DDTHH:MM para inputs datetime-local (usa hora local) */
+function formatDateTimeLocal(date) {
+  if (!date) return '';
+  const y = date.getFullYear();
+  const mo = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const h = String(date.getHours()).padStart(2, '0');
+  const mi = String(date.getMinutes()).padStart(2, '0');
+  return `${y}-${mo}-${d}T${h}:${mi}`;
 }
 
 function getAccountTypeLabel(type) {
@@ -223,6 +332,8 @@ resetBtn.addEventListener('click', () => {
   state.transactions = [];
   state.filtered = [];
   state.accountInfo = {};
+  state.currentPage = 1;
+  state.pageSize = 100;
   if (state.chart) {
     state.chart.destroy();
     state.chart = null;
@@ -324,40 +435,104 @@ const filterType = document.getElementById('filter-type');
 const filterStart = document.getElementById('filter-start');
 const filterEnd = document.getElementById('filter-end');
 const filterSearch = document.getElementById('filter-search');
+const filterCounterparty = document.getElementById('filter-counterparty');
 const filterMin = document.getElementById('filter-min');
 const filterMax = document.getElementById('filter-max');
 const filterSort = document.getElementById('filter-sort');
 const clearBtn = document.getElementById('clear-filters');
 const exportBtn = document.getElementById('export-csv');
+const pageSizeSelect = document.getElementById('page-size');
+const counterpartyList = document.getElementById('counterparty-list');
 
 function setupFilters() {
-  // Define datas iniciais baseadas nas transações
+  // Define datas iniciais baseadas nas transações (com hora)
   if (state.accountInfo.startDate) {
-    filterStart.value = formatDateISO(state.accountInfo.startDate);
+    // Inicia à meia-noite do primeiro dia
+    const startAtMidnight = new Date(state.accountInfo.startDate);
+    startAtMidnight.setHours(0, 0, 0, 0);
+    filterStart.value = formatDateTimeLocal(startAtMidnight);
   }
   if (state.accountInfo.endDate) {
-    filterEnd.value = formatDateISO(state.accountInfo.endDate);
+    // Final até 23:59 do último dia
+    const endAtEndOfDay = new Date(state.accountInfo.endDate);
+    endAtEndOfDay.setHours(23, 59, 0, 0);
+    filterEnd.value = formatDateTimeLocal(endAtEndOfDay);
   }
 
-  [filterType, filterStart, filterEnd, filterSearch, filterMin, filterMax, filterSort].forEach(
-    (el) => {
-      el.addEventListener('input', applyFilters);
-      el.addEventListener('change', applyFilters);
-    }
-  );
+  // Popula datalist de contrapartes (autocomplete)
+  populateCounterpartyList();
+
+  const filterEls = [
+    filterType,
+    filterStart,
+    filterEnd,
+    filterSearch,
+    filterCounterparty,
+    filterMin,
+    filterMax,
+    filterSort,
+  ];
+  filterEls.forEach((el) => {
+    // Ao alterar filtros, sempre volta para página 1
+    const handler = () => {
+      state.currentPage = 1;
+      applyFilters();
+    };
+    el.addEventListener('input', handler);
+    el.addEventListener('change', handler);
+  });
+
+  // Mudança de tamanho de página
+  pageSizeSelect.addEventListener('change', () => {
+    state.pageSize = parseInt(pageSizeSelect.value, 10) || 100;
+    state.currentPage = 1;
+    renderTable();
+  });
+
+  // Botões de paginação
+  document.getElementById('page-first').addEventListener('click', () => goToPage(1));
+  document.getElementById('page-prev').addEventListener('click', () => goToPage(state.currentPage - 1));
+  document.getElementById('page-next').addEventListener('click', () => goToPage(state.currentPage + 1));
+  document.getElementById('page-last').addEventListener('click', () => goToPage(totalPages()));
 
   clearBtn.addEventListener('click', () => {
     filterType.value = 'all';
     filterStart.value = '';
     filterEnd.value = '';
     filterSearch.value = '';
+    filterCounterparty.value = '';
     filterMin.value = '';
     filterMax.value = '';
     filterSort.value = 'date-desc';
+    state.currentPage = 1;
     applyFilters();
   });
 
   exportBtn.addEventListener('click', exportCSV);
+}
+
+/** Popula o datalist do autocomplete de contraparte com valores únicos */
+function populateCounterpartyList() {
+  const set = new Set();
+  state.transactions.forEach((t) => {
+    if (t.counterpartyName) set.add(t.counterpartyName);
+    if (t.counterpartyAccount) set.add(t.counterpartyAccount);
+    if (t.counterparty) set.add(t.counterparty);
+  });
+  counterpartyList.innerHTML = [...set]
+    .sort()
+    .map((v) => `<option value="${escapeHtml(v)}"></option>`)
+    .join('');
+}
+
+function totalPages() {
+  return Math.max(1, Math.ceil(state.filtered.length / state.pageSize));
+}
+
+function goToPage(n) {
+  const max = totalPages();
+  state.currentPage = Math.min(Math.max(1, n), max);
+  renderTable();
 }
 
 function applyFilters() {
@@ -370,14 +545,18 @@ function applyFilters() {
     result = result.filter((t) => t.type === 'debit');
   }
 
-  // Filtro por data
+  // Filtro por data/hora (datetime-local dá valor no formato YYYY-MM-DDTHH:MM em hora local)
   if (filterStart.value) {
-    const start = new Date(filterStart.value + 'T00:00:00');
-    result = result.filter((t) => t.date && t.date >= start);
+    const start = new Date(filterStart.value);
+    if (!isNaN(start.getTime())) {
+      result = result.filter((t) => t.date && t.date >= start);
+    }
   }
   if (filterEnd.value) {
-    const end = new Date(filterEnd.value + 'T23:59:59');
-    result = result.filter((t) => t.date && t.date <= end);
+    const end = new Date(filterEnd.value);
+    if (!isNaN(end.getTime())) {
+      result = result.filter((t) => t.date && t.date <= end);
+    }
   }
 
   // Filtro por descrição (case-insensitive)
@@ -389,6 +568,20 @@ function applyFilters() {
         (t.memo && t.memo.toLowerCase().includes(searchTerm)) ||
         (t.name && t.name.toLowerCase().includes(searchTerm))
     );
+  }
+
+  // Filtro por conta destino/origem (contraparte)
+  const cpTerm = filterCounterparty.value.trim().toLowerCase();
+  if (cpTerm) {
+    result = result.filter((t) => {
+      return (
+        (t.counterparty && t.counterparty.toLowerCase().includes(cpTerm)) ||
+        (t.counterpartyName && t.counterpartyName.toLowerCase().includes(cpTerm)) ||
+        (t.counterpartyAccount && t.counterpartyAccount.toLowerCase().includes(cpTerm)) ||
+        (t.counterpartyBank && t.counterpartyBank.toLowerCase().includes(cpTerm)) ||
+        (t.counterpartyBranch && t.counterpartyBranch.toLowerCase().includes(cpTerm))
+      );
+    });
   }
 
   // Filtro por valor
@@ -430,25 +623,39 @@ function renderTable() {
   const emptyState = document.getElementById('empty-state');
   const filteredCount = document.getElementById('filtered-count');
   const filteredTotal = document.getElementById('filtered-total');
+  const pagination = document.getElementById('pagination');
 
   filteredCount.textContent = `(${state.filtered.length} de ${state.transactions.length})`;
 
   if (state.filtered.length === 0) {
     tbody.innerHTML = '';
     emptyState.classList.remove('hidden');
+    pagination.classList.add('hidden');
     filteredTotal.textContent = formatCurrency(0);
     return;
   }
   emptyState.classList.add('hidden');
 
-  tbody.innerHTML = state.filtered
+  // Paginação
+  const total = state.filtered.length;
+  const pages = totalPages();
+  if (state.currentPage > pages) state.currentPage = pages;
+  const startIdx = (state.currentPage - 1) * state.pageSize;
+  const endIdx = Math.min(startIdx + state.pageSize, total);
+  const pageItems = state.filtered.slice(startIdx, endIdx);
+
+  tbody.innerHTML = pageItems
     .map((t) => {
       const badgeClass = t.type === 'credit' ? 'badge-credit' : 'badge-debit';
       const valueClass = t.type === 'credit' ? 'text-green-600' : 'text-red-600';
       const sign = t.type === 'credit' ? '+' : '-';
+      const cpLabel = t.type === 'credit' ? 'De' : 'Para';
+      const cpDisplay = t.counterparty
+        ? `<span class="text-gray-400 mr-1">${cpLabel}:</span>${escapeHtml(t.counterparty)}`
+        : '<span class="text-gray-300">-</span>';
       return `
         <tr>
-          <td class="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">${formatDate(t.date)}</td>
+          <td class="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">${formatDateTime(t.date)}</td>
           <td class="px-4 py-3 whitespace-nowrap">
             <span class="badge ${badgeClass}">
               <i class="fas fa-${t.type === 'credit' ? 'arrow-up' : 'arrow-down'} mr-1"></i>
@@ -456,6 +663,7 @@ function renderTable() {
             </span>
           </td>
           <td class="px-4 py-3 text-sm text-gray-800 max-w-md">${escapeHtml(t.description)}</td>
+          <td class="px-4 py-3 text-sm text-gray-700">${cpDisplay}</td>
           <td class="px-4 py-3 text-xs text-gray-500 font-mono">${escapeHtml(t.document || '-')}</td>
           <td class="px-4 py-3 text-sm font-semibold text-right whitespace-nowrap ${valueClass}">
             ${sign} ${formatCurrency(t.absAmount)}
@@ -465,12 +673,37 @@ function renderTable() {
     })
     .join('');
 
-  // Total filtrado = soma algébrica
-  const total = state.filtered.reduce((sum, t) => sum + t.amount, 0);
-  filteredTotal.textContent = formatCurrency(total);
+  // Total filtrado = soma algébrica de TODOS os itens filtrados (não só da página)
+  const totalValue = state.filtered.reduce((sum, t) => sum + t.amount, 0);
+  filteredTotal.textContent = formatCurrency(totalValue);
   filteredTotal.className =
     'px-4 py-3 text-right font-bold ' +
-    (total >= 0 ? 'text-green-600' : 'text-red-600');
+    (totalValue >= 0 ? 'text-green-600' : 'text-red-600');
+
+  // Atualiza barra de paginação
+  renderPagination(startIdx + 1, endIdx, total, pages);
+}
+
+function renderPagination(from, to, total, pages) {
+  const pagination = document.getElementById('pagination');
+  const info = document.getElementById('pagination-info');
+  const indicator = document.getElementById('page-indicator');
+
+  // Só mostra paginação se há mais de uma página
+  if (pages <= 1) {
+    pagination.classList.add('hidden');
+    return;
+  }
+  pagination.classList.remove('hidden');
+  pagination.classList.add('flex');
+
+  info.textContent = `Exibindo ${from}-${to} de ${total} transações`;
+  indicator.textContent = `Página ${state.currentPage} de ${pages}`;
+
+  document.getElementById('page-first').disabled = state.currentPage === 1;
+  document.getElementById('page-prev').disabled = state.currentPage === 1;
+  document.getElementById('page-next').disabled = state.currentPage === pages;
+  document.getElementById('page-last').disabled = state.currentPage === pages;
 }
 
 function escapeHtml(str) {
@@ -597,11 +830,19 @@ function exportCSV() {
     alert('Nenhuma transação para exportar.');
     return;
   }
-  const headers = ['Data', 'Tipo', 'Descrição', 'Documento', 'Valor'];
+  const headers = [
+    'Data/Hora',
+    'Tipo',
+    'Descrição',
+    'Conta Destino/Origem',
+    'Documento',
+    'Valor',
+  ];
   const rows = state.filtered.map((t) => [
-    formatDate(t.date),
+    formatDateTime(t.date),
     getTrnTypeLabel(t.trnType),
     t.description.replace(/"/g, '""'),
+    (t.counterparty || '').replace(/"/g, '""'),
     t.document || '',
     t.amount.toFixed(2).replace('.', ','),
   ]);
