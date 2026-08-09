@@ -8,10 +8,17 @@ body {
   border-color: #2563eb;
   transform: scale(1.01);
 }
+.dark #drop-zone.dragover {
+  background-color: #1e293b;
+  border-color: #3b82f6;
+}
 
 /* Table hover */
 #transactions-tbody tr:hover {
   background-color: #f9fafb;
+}
+.dark #transactions-tbody tr:hover {
+  background-color: #1e293b;
 }
 
 /* Badges */
@@ -32,6 +39,22 @@ body {
   background-color: #fee2e2;
   color: #991b1b;
 }
+.badge-reversal {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+.dark .badge-credit {
+  background-color: rgba(6, 95, 70, 0.35);
+  color: #6ee7b7;
+}
+.dark .badge-debit {
+  background-color: rgba(153, 27, 27, 0.35);
+  color: #fca5a5;
+}
+.dark .badge-reversal {
+  background-color: rgba(146, 64, 14, 0.35);
+  color: #fcd34d;
+}
 
 /* Scrollbar */
 ::-webkit-scrollbar {
@@ -47,6 +70,20 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
+}
+.dark ::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #475569;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Transições suaves de tema */
+html {
+  transition: background-color 0.2s ease;
 }
 
 /* Loading spinner */

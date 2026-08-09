@@ -19,6 +19,36 @@
 - Detecção automática de encoding ISO-8859-1 (padrão dos bancos brasileiros)
 - Suporte a OFX SGML (v1.x) e XML (v2.x)
 
+### 🌓 Tema Claro / Escuro
+- Alternância entre modo claro e escuro pelo botão no cabeçalho (ícone lua/sol)
+- Preferência salva em `localStorage` e restaurada sem "flash" ao recarregar
+- Respeita `prefers-color-scheme` do sistema na primeira visita
+
+### 📱 Responsividade Mobile
+- Layout adaptativo para celulares, tablets e desktop (breakpoints `sm:`, `md:`, `lg:`)
+- Em telas pequenas a tabela vira **cards** com data, tipo, descrição, contraparte e valor
+- Cabeçalho, filtros e painéis todos com espaçamento otimizado para toque
+
+### 🔄 Filtro de Estorno / Devolução
+- Detecção automática por:
+  - Tags OFX padrão: `<CORRECTFITID>`, `<CORRECTACTION>` (REPLACE/DELETE)
+  - `TRNTYPE=REVERSAL` (extensão de alguns bancos)
+  - Palavras-chave em português: ESTORNO, DEVOLUÇÃO, REEMBOLSO, CANCELAMENTO, CHARGEBACK, REVERSÃO, RESSARCIMENTO
+- Filtro aparece automaticamente **apenas** quando o arquivo contém estornos
+- Opções: **Todos** / **Somente estornos** / **Ocultar estornos**
+- Badge amarelo na tabela indicando o motivo (Estorno, Devolução, etc.)
+
+### 📄 Exportação em PDF
+- Botão vermelho **PDF** ao lado do CSV
+- Relatório em paisagem A4 contendo:
+  - Cabeçalho com dados da conta e período
+  - Filtros aplicados no momento da exportação
+  - Resumo estatístico (créditos, débitos, saldo, estornos)
+  - Tabela completa das transações filtradas
+  - Total filtrado no rodapé
+  - Paginação em todas as páginas
+- Usa **jsPDF + autotable** (via CDN) — geração 100% no navegador
+
 ### 📊 Painel de Estatísticas
 - Total de transações
 - Total de créditos (com contagem de entradas)
@@ -37,6 +67,7 @@
   - Ex.: `pix maria` · `"netflix assinatura"` · `pagamento -pix`
 - **Por conta destino/origem**: Busca combinada por nome, banco, agência ou número da conta.
   Também pode ser selecionada clicando na lista/painel de contrapartes (com totais de crédito/débito por contraparte).
+  **Sincronizada com o tipo de transação**: ao selecionar Créditos, o painel mostra apenas contrapartes que aparecem em créditos (e vice-versa); se a contraparte selecionada não existe no novo tipo, o filtro é limpo automaticamente.
 - **Por valor**: Valor mínimo e máximo
 - **Ordenação**: Data (crescente/decrescente), Valor (crescente/decrescente), Descrição (A-Z)
 
@@ -46,6 +77,14 @@ Aparece acima da Evolução Diária. Suporta 4 operações:
 - **Acrescentar %**: valor + juros/aumento (ex.: R$ 1.000,00 + 10% = R$ 1.100,00)
 - **Descontar %**: valor - desconto (ex.: R$ 1.000,00 - 10% = R$ 900,00)
 - **Qual %**: quanto A representa de B (ex.: R$ 200,00 é 20% de R$ 1.000,00)
+
+**Aceita valores no formato brasileiro completo**:
+- `10.000,00` (com ponto de milhar e vírgula decimal)
+- `R$ 10.000,00` (com símbolo de moeda)
+- `10000,00` (sem ponto de milhar)
+- `10000.00` (formato americano) — também é aceito automaticamente
+
+O valor é formatado ao sair do campo (blur). Os filtros de **Valor Mínimo** e **Valor Máximo** aceitam o mesmo formato.
 
 ### 🌐 Detecção Automática de Encoding
 O leitor detecta automaticamente o encoding declarado no cabeçalho OFX:

@@ -26,9 +26,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!calcValue) return;
 
   const hints = {
-    of: 'Ex.: 10% de R$ 1.000,00 = R$ 100,00',
-    add: 'Ex.: R$ 1.000,00 + 10% de acréscimo = R$ 1.100,00',
-    sub: 'Ex.: R$ 1.000,00 - 10% de desconto = R$ 900,00',
+    of: 'Ex.: 10% de R$ 10.000,00 = R$ 1.000,00',
+    add: 'Ex.: R$ 10.000,00 + 10% de acréscimo = R$ 11.000,00',
+    sub: 'Ex.: R$ 10.000,00 - 10% de desconto = R$ 9.000,00',
     ratio: 'Ex.: R$ 200,00 representa 20% de R$ 1.000,00',
   };
 
@@ -40,14 +40,14 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   function calc() {
-    const v = parseFloat(calcValue.value);
-    const p = parseFloat(calcPercent.value);
+    const v = parseBRNumber(calcValue.value);
+    const p = parseBRNumber(calcPercent.value);
     const op = calcOp.value;
 
     calcSecondLabel.textContent = labels[op];
     calcHint.textContent = hints[op];
 
-    if (isNaN(v) || isNaN(p)) {
+    if (v === null || p === null) {
       calcResult.textContent = op === 'ratio' ? '0,00%' : formatCurrency(0);
       return;
     }
@@ -78,10 +78,27 @@ document.addEventListener('DOMContentLoaded', () => {
     calcResult.textContent = display;
   }
 
-  [calcValue, calcOp, calcPercent].forEach((el) => {
-    el.addEventListener('input', calc);
-    el.addEventListener('change', calc);
+  // Formata o campo de valor ao perder o foco (blur)
+  function formatCurrencyInput(input) {
+    const raw = parseBRNumber(input.value);
+    if (raw === null) {
+      input.value = '';
+      return;
+    }
+    // Formatação brasileira sem símbolo R$: 10.000,00
+    input.value = new Intl.NumberFormat('pt-BR', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(raw);
+  }
+
+  calcValue.addEventListener('blur', () => {
+    formatCurrencyInput(calcValue);
+    calc();
   });
+  calcValue.addEventListener('input', calc);
+  calcPercent.addEventListener('input', calc);
+  calcOp.addEventListener('change', calc);
 
   // Toggle do painel de contrapartes
   const cpToggle = document.getElementById('counterparty-toggle');
@@ -156,6 +173,15 @@ function parseOFX(content) {
     // Conta de origem/destino (BANKACCTTO / CCACCTTO no padrão OFX)
     const counterparty = extractCounterparty(block, memo, name);
 
+    // Detecção de estorno/devolução:
+    //  - Tag CORRECTFITID presente = corrige transação anterior
+    //  - CORRECTACTION = REPLACE/DELETE
+    //  - TRNTYPE = REVERSAL (extensão de alguns bancos)
+    //  - Palavras-chave no MEMO/NAME (padrão brasileiro)
+    const correctFitId = getTagValue(block, 'CORRECTFITID');
+    const correctAction = getTagValue(block, 'CORRECTACTION');
+    const isReversal = detectReversal(trnType, memo, name, correctFitId, correctAction);
+
     // Descrição consolidada
     let description = name || memo;
     if (name && memo && name !== memo) {
@@ -174,11 +200,14 @@ function parseOFX(content) {
       document: checkNum || refNum || fitId,
       amount: amount,
       absAmount: Math.abs(amount),
-      counterparty: counterparty.label,       // Ex: "JOÃO SILVA" ou "AG 1234 CC 56789-0"
-      counterpartyAccount: counterparty.account, // Ex: "56789-0"
-      counterpartyBank: counterparty.bank,       // Ex: "001"
-      counterpartyBranch: counterparty.branch,   // Ex: "1234"
-      counterpartyName: counterparty.name,       // Ex: "JOÃO SILVA"
+      counterparty: counterparty.label,
+      counterpartyAccount: counterparty.account,
+      counterpartyBank: counterparty.bank,
+      counterpartyBranch: counterparty.branch,
+      counterpartyName: counterparty.name,
+      isReversal,                              // boolean: é estorno/devolução?
+      reversalReason: isReversal ? detectReversalReason(memo, name, correctFitId) : '',
+      correctFitId,                            // FITID da transação sendo corrigida
     });
   }
 
@@ -195,6 +224,55 @@ function getTagValue(text, tag) {
   const regex = new RegExp(`<${tag}>([^<]*)<\/${tag}>`, 'i');
   const m = text.match(regex);
   return m ? m[1].trim() : '';
+}
+
+/**
+ * Detecta se uma transação é estorno/devolução.
+ * Verifica:
+ *  1. Tags CORRECTFITID / CORRECTACTION (padrão OFX)
+ *  2. TRNTYPE=REVERSAL (extensão)
+ *  3. Palavras-chave em MEMO/NAME
+ */
+function detectReversal(trnType, memo, name, correctFitId, correctAction) {
+  if (correctFitId && correctFitId.length > 0) return true;
+  if (correctAction === 'REPLACE' || correctAction === 'DELETE') return true;
+  if (trnType && trnType.toUpperCase() === 'REVERSAL') return true;
+  const text = normalizeText(`${memo} ${name}`);
+  // Palavras-chave (sem acento, minúsculo)
+  const keywords = [
+    'estorno',
+    'estornado',
+    'estornada',
+    'devolucao',
+    'devolvido',
+    'devolvida',
+    'reembolso',
+    'reembolsado',
+    'cancelamento',
+    'cancelado',
+    'cancelada',
+    'chargeback',
+    'reversal',
+    'reversao',
+    'ressarcimento',
+  ];
+  return keywords.some((kw) => text.includes(kw));
+}
+
+function detectReversalReason(memo, name, correctFitId) {
+  if (correctFitId) return `Corrige transação ${correctFitId}`;
+  const text = `${memo} ${name}`.toUpperCase();
+  const patterns = [
+    { re: /ESTORNO/, reason: 'Estorno' },
+    { re: /DEVOLU[ÇC][ÃA]O|DEVOLVID[OA]/, reason: 'Devolução' },
+    { re: /REEMBOLSO|REEMBOLSAD[OA]/, reason: 'Reembolso' },
+    { re: /CANCELAMENTO|CANCELAD[OA]/, reason: 'Cancelamento' },
+    { re: /CHARGEBACK/, reason: 'Chargeback' },
+    { re: /RESSARCIMENTO/, reason: 'Ressarcimento' },
+    { re: /REVERS[AÃ]O|REVERSAL/, reason: 'Reversão' },
+  ];
+  for (const p of patterns) if (p.re.test(text)) return p.reason;
+  return 'Estorno';
 }
 
 function getBlockValue(text, blockTag) {
@@ -558,7 +636,25 @@ function looksLikeUtf8(buffer) {
 function renderDashboard() {
   renderAccountInfo();
   setupFilters();
+  updateReversalUI();
   applyFilters();
+}
+
+/**
+ * Mostra/oculta o filtro de estorno baseado na presença de estornos no arquivo.
+ * Também atualiza o contador no badge.
+ */
+function updateReversalUI() {
+  const wrapper = document.getElementById('reversal-filter-wrapper');
+  const countEl = document.getElementById('reversal-count');
+  if (!wrapper || !countEl) return;
+  const total = state.transactions.filter((t) => t.isReversal).length;
+  countEl.textContent = String(total);
+  if (total > 0) {
+    wrapper.classList.remove('hidden');
+  } else {
+    wrapper.classList.add('hidden');
+  }
 }
 
 function renderAccountInfo() {
@@ -644,13 +740,41 @@ function setupFilters() {
     filterSort,
   ];
   filterEls.forEach((el) => {
-    // Ao alterar filtros, sempre volta para página 1
     const handler = () => {
       state.currentPage = 1;
       applyFilters();
     };
     el.addEventListener('input', handler);
     el.addEventListener('change', handler);
+  });
+
+  // Filtro estorno (checkbox)
+  const filterReversal = document.getElementById('filter-reversal');
+  if (filterReversal) {
+    filterReversal.addEventListener('change', () => {
+      state.currentPage = 1;
+      applyFilters();
+    });
+  }
+
+  // Regra de coer\u00eancia: quando o TIPO muda, valida se o filtro de contraparte
+  // ainda \u00e9 v\u00e1lido no novo escopo (n\u00e3o pode divergir).
+  filterType.addEventListener('change', () => {
+    const cpValue = filterCounterparty.value.trim().toLowerCase();
+    if (!cpValue) return;
+    const typeF = filterType.value;
+    const entry = state.counterpartyList.find(
+      ([n]) => n.toLowerCase() === cpValue
+    );
+    if (!entry) return;
+    const [, data] = entry;
+    // Se filtrou por CR\u00c9DITO mas a contraparte s\u00f3 tem d\u00e9bitos (ou vice-versa),
+    // limpa o filtro de contraparte automaticamente
+    if (typeF === 'credit' && data.creditCount === 0) {
+      filterCounterparty.value = '';
+    } else if (typeF === 'debit' && data.debitCount === 0) {
+      filterCounterparty.value = '';
+    }
   });
 
   // Mudança de tamanho de página
@@ -683,84 +807,128 @@ function setupFilters() {
 }
 
 /**
- * Popula o datalist do autocomplete de contraparte com valores únicos.
- * Prioriza nomes de pessoas/empresas. Também guarda o mapa completo
- * para o dropdown lateral.
+ * Popula o mapa completo de contrapartes com totais por tipo.
+ * Chamado uma vez ao carregar o arquivo.
  */
 function populateCounterpartyList() {
-  const nameCount = new Map(); // nome → { count, totalCredit, totalDebit }
+  const nameCount = new Map();
   state.transactions.forEach((t) => {
     const key = t.counterpartyName || t.counterparty;
     if (!key) return;
     if (!nameCount.has(key)) {
-      nameCount.set(key, { count: 0, totalCredit: 0, totalDebit: 0 });
+      nameCount.set(key, {
+        count: 0,
+        creditCount: 0,
+        debitCount: 0,
+        totalCredit: 0,
+        totalDebit: 0,
+      });
     }
     const entry = nameCount.get(key);
     entry.count++;
-    if (t.type === 'credit') entry.totalCredit += t.amount;
-    else entry.totalDebit += t.absAmount;
+    if (t.type === 'credit') {
+      entry.creditCount++;
+      entry.totalCredit += t.amount;
+    } else {
+      entry.debitCount++;
+      entry.totalDebit += t.absAmount;
+    }
   });
-  // Ordena por número de transações (mais frequentes primeiro)
   const sorted = [...nameCount.entries()].sort((a, b) => b[1].count - a[1].count);
-
-  // Datalist para autocomplete (input)
-  counterpartyList.innerHTML = sorted
-    .map(([name, data]) => {
-      const info = `${data.count} transação(ões)`;
-      return `<option value="${escapeHtml(name)}" label="${escapeHtml(info)}"></option>`;
-    })
-    .join('');
-
-  // Preenche o dropdown/lista lateral
   state.counterpartyList = sorted;
   renderCounterpartyPanel();
 }
 
-/** Renderiza a lista lateral com todos os destinos/origens */
+/**
+ * Renderiza o painel de contrapartes, respeitando o filtro de tipo.
+ *  - Se tipo = "credit", mostra apenas contrapartes com créditos
+ *  - Se tipo = "debit", mostra apenas contrapartes com débitos
+ *  - Se tipo = "all", mostra todas
+ * Atualiza também o datalist do autocomplete com o mesmo escopo.
+ */
 function renderCounterpartyPanel() {
   const panel = document.getElementById('counterparty-panel');
   const countLabel = document.getElementById('counterparty-count');
   if (!panel) return;
-  if (!state.counterpartyList || state.counterpartyList.length === 0) {
+
+  const typeFilter = filterType.value; // 'all' | 'credit' | 'debit'
+
+  // Filtra a lista pela tipagem selecionada
+  const scoped = (state.counterpartyList || []).filter(([, data]) => {
+    if (typeFilter === 'credit') return data.creditCount > 0;
+    if (typeFilter === 'debit') return data.debitCount > 0;
+    return true;
+  });
+
+  // Atualiza datalist do input (para autocomplete)
+  if (counterpartyList) {
+    counterpartyList.innerHTML = scoped
+      .map(([name, data]) => {
+        const info =
+          typeFilter === 'credit'
+            ? `${data.creditCount} crédito(s)`
+            : typeFilter === 'debit'
+            ? `${data.debitCount} débito(s)`
+            : `${data.count} transação(ões)`;
+        return `<option value="${escapeHtml(name)}" label="${escapeHtml(info)}"></option>`;
+      })
+      .join('');
+  }
+
+  if (scoped.length === 0) {
     panel.innerHTML =
-      '<p class="text-xs text-gray-400 italic p-2 col-span-full">Nenhuma contraparte identificada no arquivo.</p>';
+      '<p class="text-xs text-slate-400 italic p-2 col-span-full">Nenhuma contraparte encontrada para este tipo.</p>';
     if (countLabel) countLabel.textContent = '';
     return;
   }
-  if (countLabel) countLabel.textContent = `(${state.counterpartyList.length})`;
+  if (countLabel) {
+    const total = state.counterpartyList.length;
+    const shown = scoped.length;
+    countLabel.textContent =
+      typeFilter === 'all' ? `(${total})` : `(${shown} de ${total})`;
+  }
+
   const currentFilter = filterCounterparty.value.trim().toLowerCase();
-  panel.innerHTML = state.counterpartyList
+  panel.innerHTML = scoped
     .map(([name, data]) => {
       const isActive = currentFilter && name.toLowerCase() === currentFilter;
       const activeClass = isActive
-        ? 'bg-blue-100 border-blue-400 text-blue-800'
-        : 'bg-white hover:bg-gray-50 border-gray-200 text-gray-700';
+        ? 'bg-blue-100 dark:bg-blue-900 border-blue-400 dark:border-blue-500 text-blue-800 dark:text-blue-200'
+        : 'bg-white dark:bg-slate-800 hover:bg-gray-50 dark:hover:bg-slate-700 border-gray-200 dark:border-slate-600 text-gray-700 dark:text-slate-200';
       const flows = [];
-      if (data.totalCredit > 0)
+      // No modo "credit" só mostra crédito; "debit" só débito; "all" mostra ambos
+      if (typeFilter !== 'debit' && data.totalCredit > 0) {
         flows.push(
-          `<span class="text-green-600"><i class="fas fa-arrow-up"></i> ${formatCurrency(
+          `<span class="text-green-600 dark:text-green-400"><i class="fas fa-arrow-up"></i> ${formatCurrency(
             data.totalCredit
           )}</span>`
         );
-      if (data.totalDebit > 0)
+      }
+      if (typeFilter !== 'credit' && data.totalDebit > 0) {
         flows.push(
-          `<span class="text-red-600"><i class="fas fa-arrow-down"></i> ${formatCurrency(
+          `<span class="text-red-600 dark:text-red-400"><i class="fas fa-arrow-down"></i> ${formatCurrency(
             data.totalDebit
           )}</span>`
         );
+      }
+      const shownCount =
+        typeFilter === 'credit'
+          ? data.creditCount
+          : typeFilter === 'debit'
+          ? data.debitCount
+          : data.count;
       return `
         <button type="button" data-cp="${escapeHtml(name)}"
           class="counterparty-item text-left w-full border ${activeClass} rounded-lg px-3 py-2 text-xs transition">
           <div class="font-semibold truncate">${escapeHtml(name)}</div>
-          <div class="flex items-center justify-between mt-1">
-            <span class="text-gray-500">${data.count} trans.</span>
-            <div class="flex gap-2 text-[11px]">${flows.join('')}</div>
+          <div class="flex items-center justify-between mt-1 gap-2">
+            <span class="text-gray-500 dark:text-slate-400 whitespace-nowrap">${shownCount} trans.</span>
+            <div class="flex gap-2 text-[11px] flex-wrap justify-end">${flows.join('')}</div>
           </div>
         </button>`;
     })
     .join('');
 
-  // Attach click handlers
   panel.querySelectorAll('.counterparty-item').forEach((btn) => {
     btn.addEventListener('click', () => {
       const name = btn.getAttribute('data-cp');
@@ -805,6 +973,48 @@ function normalizeText(text) {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
+}
+
+/**
+ * Parseia número em formato brasileiro (R$ 10.000,00) ou americano (10000.00)
+ * Aceita:
+ *  - "10.000,00"     → 10000
+ *  - "R$ 10.000,00"  → 10000
+ *  - "10000,00"      → 10000
+ *  - "10000.00"      → 10000 (formato americano)
+ *  - "1000"          → 1000
+ *  - "1,5"           → 1.5
+ *  - ""              → null
+ */
+function parseBRNumber(str) {
+  if (str === null || str === undefined) return null;
+  let s = String(str).trim();
+  if (!s) return null;
+  // Remove símbolos de moeda e espaços
+  s = s.replace(/R\$|\s/g, '').replace(/[^\d,.\-+]/g, '');
+  if (!s) return null;
+
+  const hasComma = s.includes(',');
+  const hasDot = s.includes('.');
+
+  if (hasComma && hasDot) {
+    // Ambos presentes: vírgula é decimal, ponto é milhar (padrão BR)
+    s = s.replace(/\./g, '').replace(',', '.');
+  } else if (hasComma) {
+    // Só vírgula: decimal BR
+    s = s.replace(',', '.');
+  } else if (hasDot) {
+    // Só ponto: pode ser decimal (10.50) ou milhar (10.000)
+    // Se tem mais de um ponto ou o segmento após o último ponto tem 3 dígitos, é milhar
+    const parts = s.split('.');
+    if (parts.length > 2 || (parts.length === 2 && parts[1].length === 3)) {
+      s = s.replace(/\./g, '');
+    }
+    // senão mantém como decimal americano
+  }
+
+  const n = parseFloat(s);
+  return isNaN(n) ? null : n;
 }
 
 function totalPages() {
@@ -880,11 +1090,19 @@ function applyFilters() {
     });
   }
 
-  // Filtro por valor
-  const minV = parseFloat(filterMin.value);
-  const maxV = parseFloat(filterMax.value);
-  if (!isNaN(minV)) result = result.filter((t) => t.absAmount >= minV);
-  if (!isNaN(maxV)) result = result.filter((t) => t.absAmount <= maxV);
+  // Filtro por valor (aceita formato BR)
+  const minV = parseBRNumber(filterMin.value);
+  const maxV = parseBRNumber(filterMax.value);
+  if (minV !== null) result = result.filter((t) => t.absAmount >= minV);
+  if (maxV !== null) result = result.filter((t) => t.absAmount <= maxV);
+
+  // Filtro por estorno/devolução
+  const filterReversalEl = document.getElementById('filter-reversal');
+  if (filterReversalEl) {
+    const rvMode = filterReversalEl.value;
+    if (rvMode === 'only') result = result.filter((t) => t.isReversal);
+    else if (rvMode === 'exclude') result = result.filter((t) => !t.isReversal);
+  }
 
   // Ordenação
   switch (filterSort.value) {
@@ -917,18 +1135,22 @@ function applyFilters() {
 // ============================================================
 function renderTable() {
   const tbody = document.getElementById('transactions-tbody');
+  const mobile = document.getElementById('transactions-mobile');
   const emptyState = document.getElementById('empty-state');
   const filteredCount = document.getElementById('filtered-count');
   const filteredTotal = document.getElementById('filtered-total');
+  const filteredTotalMobile = document.getElementById('filtered-total-mobile');
   const pagination = document.getElementById('pagination');
 
   filteredCount.textContent = `(${state.filtered.length} de ${state.transactions.length})`;
 
   if (state.filtered.length === 0) {
     tbody.innerHTML = '';
+    if (mobile) mobile.innerHTML = '';
     emptyState.classList.remove('hidden');
     pagination.classList.add('hidden');
     filteredTotal.textContent = formatCurrency(0);
+    if (filteredTotalMobile) filteredTotalMobile.textContent = formatCurrency(0);
     return;
   }
   emptyState.classList.add('hidden');
@@ -941,27 +1163,32 @@ function renderTable() {
   const endIdx = Math.min(startIdx + state.pageSize, total);
   const pageItems = state.filtered.slice(startIdx, endIdx);
 
+  // Renderização desktop (tabela)
   tbody.innerHTML = pageItems
     .map((t) => {
       const badgeClass = t.type === 'credit' ? 'badge-credit' : 'badge-debit';
-      const valueClass = t.type === 'credit' ? 'text-green-600' : 'text-red-600';
+      const valueClass = t.type === 'credit' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400';
       const sign = t.type === 'credit' ? '+' : '-';
       const cpLabel = t.type === 'credit' ? 'De' : 'Para';
       const cpDisplay = t.counterparty
-        ? `<span class="text-gray-400 mr-1">${cpLabel}:</span>${escapeHtml(t.counterparty)}`
-        : '<span class="text-gray-300">-</span>';
+        ? `<span class="text-gray-400 dark:text-slate-500 mr-1">${cpLabel}:</span>${escapeHtml(t.counterparty)}`
+        : '<span class="text-gray-300 dark:text-slate-600">-</span>';
+      const reversalBadge = t.isReversal
+        ? `<span class="badge badge-reversal ml-1" title="${escapeHtml(t.reversalReason || 'Estorno')}"><i class="fas fa-undo mr-1"></i>${escapeHtml(t.reversalReason || 'Estorno')}</span>`
+        : '';
       return `
         <tr>
-          <td class="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">${formatDateTime(t.date)}</td>
+          <td class="px-4 py-3 text-sm text-gray-700 dark:text-slate-300 whitespace-nowrap">${formatDateTime(t.date)}</td>
           <td class="px-4 py-3 whitespace-nowrap">
             <span class="badge ${badgeClass}">
               <i class="fas fa-${t.type === 'credit' ? 'arrow-up' : 'arrow-down'} mr-1"></i>
               ${getTrnTypeLabel(t.trnType)}
             </span>
+            ${reversalBadge}
           </td>
-          <td class="px-4 py-3 text-sm text-gray-800 max-w-md">${escapeHtml(t.description)}</td>
-          <td class="px-4 py-3 text-sm text-gray-700">${cpDisplay}</td>
-          <td class="px-4 py-3 text-xs text-gray-500 font-mono">${escapeHtml(t.document || '-')}</td>
+          <td class="px-4 py-3 text-sm text-gray-800 dark:text-slate-200 max-w-md">${escapeHtml(t.description)}</td>
+          <td class="px-4 py-3 text-sm text-gray-700 dark:text-slate-300">${cpDisplay}</td>
+          <td class="px-4 py-3 text-xs text-gray-500 dark:text-slate-400 font-mono">${escapeHtml(t.document || '-')}</td>
           <td class="px-4 py-3 text-sm font-semibold text-right whitespace-nowrap ${valueClass}">
             ${sign} ${formatCurrency(t.absAmount)}
           </td>
@@ -970,12 +1197,54 @@ function renderTable() {
     })
     .join('');
 
+  // Renderização mobile (cards)
+  if (mobile) {
+    mobile.innerHTML = pageItems
+      .map((t) => {
+        const badgeClass = t.type === 'credit' ? 'badge-credit' : 'badge-debit';
+        const valueClass = t.type === 'credit' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400';
+        const sign = t.type === 'credit' ? '+' : '-';
+        const cpLabel = t.type === 'credit' ? 'De' : 'Para';
+        const reversalBadge = t.isReversal
+          ? `<span class="badge badge-reversal ml-1"><i class="fas fa-undo mr-1"></i>${escapeHtml(t.reversalReason || 'Estorno')}</span>`
+          : '';
+        return `
+          <div class="p-3 space-y-1">
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center flex-wrap gap-1">
+                <span class="badge ${badgeClass}">
+                  <i class="fas fa-${t.type === 'credit' ? 'arrow-up' : 'arrow-down'} mr-1"></i>
+                  ${getTrnTypeLabel(t.trnType)}
+                </span>
+                ${reversalBadge}
+              </div>
+              <div class="text-sm font-bold whitespace-nowrap ${valueClass}">${sign} ${formatCurrency(t.absAmount)}</div>
+            </div>
+            <div class="text-xs text-gray-500 dark:text-slate-400">
+              <i class="far fa-clock mr-1"></i>${formatDateTime(t.date)}
+            </div>
+            <div class="text-sm text-gray-800 dark:text-slate-100 break-words">${escapeHtml(t.description)}</div>
+            ${t.counterparty ? `<div class="text-xs text-gray-600 dark:text-slate-300"><span class="text-gray-400 dark:text-slate-500">${cpLabel}:</span> ${escapeHtml(t.counterparty)}</div>` : ''}
+            ${t.document ? `<div class="text-[11px] text-gray-400 dark:text-slate-500 font-mono">Doc: ${escapeHtml(t.document)}</div>` : ''}
+          </div>
+        `;
+      })
+      .join('');
+  }
+
   // Total filtrado = soma algébrica de TODOS os itens filtrados (não só da página)
   const totalValue = state.filtered.reduce((sum, t) => sum + t.amount, 0);
-  filteredTotal.textContent = formatCurrency(totalValue);
-  filteredTotal.className =
+  const totalClass =
     'px-4 py-3 text-right font-bold ' +
-    (totalValue >= 0 ? 'text-green-600' : 'text-red-600');
+    (totalValue >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400');
+  filteredTotal.textContent = formatCurrency(totalValue);
+  filteredTotal.className = totalClass;
+  if (filteredTotalMobile) {
+    filteredTotalMobile.textContent = formatCurrency(totalValue);
+    filteredTotalMobile.className =
+      (totalValue >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400') +
+      ' font-bold';
+  }
 
   // Atualiza barra de paginação
   renderPagination(startIdx + 1, endIdx, total, pages);
@@ -1159,3 +1428,209 @@ function exportCSV() {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+// ============================================================
+// EXPORTAÇÃO PDF
+// ============================================================
+/**
+ * Gera relatório PDF do extrato com:
+ *  - Cabeçalho (informações da conta)
+ *  - Resumo estatístico (créditos, débitos, saldo, ticket médio)
+ *  - Filtros aplicados
+ *  - Tabela de transações
+ *  - Total filtrado no rodapé
+ * Usa jsPDF + autotable (carregados via CDN).
+ */
+function exportPDF() {
+  if (state.filtered.length === 0) {
+    alert('Nenhuma transação para exportar.');
+    return;
+  }
+  if (typeof window.jspdf === 'undefined' || !window.jspdf.jsPDF) {
+    alert('Biblioteca de PDF não carregada. Recarregue a página e tente novamente.');
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  // Cabeçalho
+  doc.setFontSize(16);
+  doc.setFont('helvetica', 'bold');
+  doc.text('Relatório de Extrato Bancário', pageWidth / 2, 15, { align: 'center' });
+
+  const info = state.accountInfo;
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'normal');
+  const accountLines = [
+    `Banco: ${info.bankId || '-'}   Agência: ${info.branchId || '-'}   Conta: ${info.accountId || '-'} (${getAccountTypeLabel(info.accountType)})`,
+    `Período: ${formatDate(info.startDate)} até ${formatDate(info.endDate)}   Saldo: ${formatCurrency(info.balance)} em ${formatDate(info.balanceDate)}`,
+    `Gerado em: ${new Date().toLocaleString('pt-BR')}`,
+  ];
+  let y = 22;
+  accountLines.forEach((l) => {
+    doc.text(l, 14, y);
+    y += 5;
+  });
+
+  // Filtros aplicados
+  const filters = [];
+  if (filterType.value !== 'all') {
+    filters.push(`Tipo: ${filterType.value === 'credit' ? 'Somente créditos' : 'Somente débitos'}`);
+  }
+  if (filterStart.value) filters.push(`De: ${new Date(filterStart.value).toLocaleString('pt-BR')}`);
+  if (filterEnd.value) filters.push(`Até: ${new Date(filterEnd.value).toLocaleString('pt-BR')}`);
+  if (filterSearch.value) filters.push(`Busca: "${filterSearch.value}"`);
+  if (filterCounterparty.value) filters.push(`Conta: ${filterCounterparty.value}`);
+  if (filterMin.value) filters.push(`Mín: ${filterMin.value}`);
+  if (filterMax.value) filters.push(`Máx: ${filterMax.value}`);
+  const reversalEl = document.getElementById('filter-reversal');
+  if (reversalEl && reversalEl.value === 'only') filters.push('Somente estornos');
+  if (reversalEl && reversalEl.value === 'exclude') filters.push('Sem estornos');
+  if (filters.length) {
+    doc.setFont('helvetica', 'bold');
+    doc.text('Filtros: ', 14, y);
+    doc.setFont('helvetica', 'normal');
+    const filtersText = filters.join('  |  ');
+    const split = doc.splitTextToSize(filtersText, pageWidth - 40);
+    doc.text(split, 30, y);
+    y += 5 * split.length;
+  }
+
+  // Estatísticas
+  const credits = state.filtered.filter((t) => t.type === 'credit');
+  const debits = state.filtered.filter((t) => t.type === 'debit');
+  const totalCredit = credits.reduce((s, t) => s + t.amount, 0);
+  const totalDebit = debits.reduce((s, t) => s + t.absAmount, 0);
+  const balance = totalCredit - totalDebit;
+  const reversalCount = state.filtered.filter((t) => t.isReversal).length;
+
+  y += 2;
+  doc.setFont('helvetica', 'bold');
+  doc.text('Resumo:', 14, y);
+  doc.setFont('helvetica', 'normal');
+  const stats = [
+    `Transações: ${state.filtered.length}`,
+    `Créditos: ${formatCurrency(totalCredit)} (${credits.length})`,
+    `Débitos: ${formatCurrency(totalDebit)} (${debits.length})`,
+    `Saldo: ${formatCurrency(balance)}`,
+  ];
+  if (reversalCount > 0) stats.push(`Estornos: ${reversalCount}`);
+  doc.text(stats.join('   |   '), 32, y);
+  y += 6;
+
+  // Tabela de transações
+  const rows = state.filtered.map((t) => [
+    formatDateTime(t.date),
+    getTrnTypeLabel(t.trnType) + (t.isReversal ? ' (Estorno)' : ''),
+    t.description,
+    t.counterparty || '-',
+    t.document || '-',
+    (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount),
+  ]);
+
+  doc.autoTable({
+    startY: y,
+    head: [['Data/Hora', 'Tipo', 'Descrição', 'Conta Destino/Origem', 'Documento', 'Valor']],
+    body: rows,
+    styles: { fontSize: 7, cellPadding: 1.5, overflow: 'linebreak' },
+    headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+    columnStyles: {
+      0: { cellWidth: 30 },
+      1: { cellWidth: 35 },
+      2: { cellWidth: 'auto' },
+      3: { cellWidth: 55 },
+      4: { cellWidth: 25 },
+      5: { cellWidth: 28, halign: 'right', fontStyle: 'bold' },
+    },
+    didParseCell: (data) => {
+      if (data.section === 'body' && data.column.index === 5) {
+        const value = state.filtered[data.row.index].amount;
+        data.cell.styles.textColor = value >= 0 ? [22, 163, 74] : [220, 38, 38];
+      }
+    },
+    didDrawPage: (data) => {
+      // Rodapé com paginação
+      const pageCount = doc.internal.getNumberOfPages();
+      doc.setFontSize(8);
+      doc.setTextColor(120);
+      doc.text(
+        `Página ${data.pageNumber} de ${pageCount}`,
+        pageWidth - 14,
+        doc.internal.pageSize.getHeight() - 8,
+        { align: 'right' }
+      );
+      doc.text(
+        'Leitor OFX · Processado 100% localmente',
+        14,
+        doc.internal.pageSize.getHeight() - 8
+      );
+    },
+  });
+
+  // Total filtrado ao final
+  let endY = doc.lastAutoTable.finalY + 6;
+  if (endY > doc.internal.pageSize.getHeight() - 20) {
+    doc.addPage();
+    endY = 20;
+  }
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(0);
+  doc.text('Total filtrado:', pageWidth - 60, endY, { align: 'right' });
+  doc.setTextColor(balance >= 0 ? 22 : 220, balance >= 0 ? 163 : 38, balance >= 0 ? 74 : 38);
+  doc.text(formatCurrency(balance), pageWidth - 14, endY, { align: 'right' });
+
+  doc.save(`extrato_${formatDateISO(new Date())}.pdf`);
+}
+
+// ============================================================
+// TEMA CLARO / ESCURO
+// ============================================================
+/**
+ * Aplica o tema (claro ou escuro) e persiste em localStorage.
+ * O tema é restaurado imediatamente no <head> (script inline) para evitar flash.
+ */
+function setTheme(theme) {
+  const isDark = theme === 'dark';
+  document.documentElement.classList.toggle('dark', isDark);
+  try {
+    localStorage.setItem('theme', theme);
+  } catch (e) {}
+  const icon = document.getElementById('theme-icon');
+  if (icon) {
+    icon.className = isDark ? 'fas fa-sun' : 'fas fa-moon';
+  }
+  // Se o gráfico existe, força re-render para atualizar cores dos ticks
+  if (state.chart && typeof renderChart === 'function' && state.filtered.length > 0) {
+    renderChart();
+  }
+}
+
+function initTheme() {
+  const saved = (() => {
+    try {
+      return localStorage.getItem('theme');
+    } catch (e) {
+      return null;
+    }
+  })();
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const theme = saved || (prefersDark ? 'dark' : 'light');
+  setTheme(theme);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  initTheme();
+  const toggle = document.getElementById('theme-toggle');
+  if (toggle) {
+    toggle.addEventListener('click', () => {
+      const isDark = document.documentElement.classList.contains('dark');
+      setTheme(isDark ? 'light' : 'dark');
+    });
+  }
+  // Wire PDF button
+  const pdfBtn = document.getElementById('export-pdf');
+  if (pdfBtn) pdfBtn.addEventListener('click', exportPDF);
+});
