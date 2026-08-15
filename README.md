@@ -1,16 +1,15 @@
-# Leitor de Extrato Bancário OFX & PDF
+# Leitor de Extrato Bancário OFX
 
 ## Visão Geral
-- **Nome**: Leitor de Extrato OFX & PDF
-- **Objetivo**: Sistema web para leitura e análise de extratos bancários em formato **OFX** (Open Financial Exchange, recomendado) e **PDF** (experimental, cobre extratos textuais dos principais bancos brasileiros)
+- **Nome**: Leitor de Extrato OFX
+- **Objetivo**: Sistema web para leitura e análise de extratos bancários em formato OFX (Open Financial Exchange), padrão usado por bancos brasileiros
 - **Diferencial**: Processamento 100% local no navegador — nenhum dado bancário é enviado para servidores
 
-> **Nota sobre o formato**: A solicitação original mencionava "pfx", porém PFX é formato de certificado digital. O formato correto e recomendado para extratos bancários é **OFX** (Open Financial Exchange), que é o adotado pela maioria dos bancos brasileiros para exportação de extratos. O suporte a **PDF** foi adicionado como conveniência para quando o OFX não estiver disponível.
+> **Nota sobre o formato**: A solicitação original mencionava "pfx", porém PFX é formato de certificado digital. O formato correto para extratos bancários é **OFX** (Open Financial Exchange), que é o adotado pela maioria dos bancos brasileiros para exportação de extratos.
 
 ## URLs
 - **Sandbox (desenvolvimento)**: https://3000-ieuqgzbrndccyipebk6dr-b237eb32.sandbox.novita.ai
 - **Arquivo OFX de exemplo**: `/exemplo.ofx` (download disponível para teste)
-- **Arquivo PDF de exemplo**: `/exemplo-extrato.pdf` (13 transações, 3 estornos)
 - **Produção**: (não deployado ainda)
 
 ## Funcionalidades Implementadas
@@ -18,40 +17,7 @@
 ### 📤 Upload
 - Upload por drag-and-drop ou seleção manual
 - Detecção automática de encoding ISO-8859-1 (padrão dos bancos brasileiros)
-- Suporte a **OFX** SGML (v1.x) e XML (v2.x) — formato recomendado
-- Suporte a **PDF** (experimental) — parser genérico de extratos brasileiros
-
-### 📄 Suporte a PDF (Experimental)
-Extratos em PDF são convertidos para transações usando **pdf.js** (Mozilla) direto no navegador, sem envio ao servidor.
-
-**Como funciona o parser:**
-- pdf.js extrai texto com **coordenadas X/Y** de cada página
-- Linhas são reconstruídas agrupando itens por **posição Y** (tolerância ±3px)
-- Detecção automática de **banco emissor** por padrões (Nubank, Itaú, Bradesco, BB, Caixa, Santander, Inter, C6, BTG, PicPay, Sicoob, Sicredi, Original, Mercado Pago, Next) + fallback genérico para "BANCO ... - CÓDIGO"
-- Extração de **agência, conta e saldo final** por regex sobre o cabeçalho
-- Cada linha iniciada por data (`dd/mm/yyyy`, `dd/mm/yy` ou `dd/mm`) é analisada como transação
-- **Detecção inteligente de coluna VALOR vs SALDO**: quando a linha tem dois valores monetários, o parser usa flag D/C ou heurística "primeiro valor = transação, último = saldo"
-- Filtro automático de linhas **SALDO ANTERIOR / SALDO FINAL / TOTAL** para não contá-las como transações
-- Detecção de **estornos** (ESTORNO, DEVOLUÇÃO, REEMBOLSO, CANCELAMENTO, CHARGEBACK) por palavras-chave
-- Suporta formato brasileiro (`1.234,56 D/C`) e contábil (`(1.234,56)` = negativo)
-
-**Fluxo de importação (com preview obrigatório):**
-1. Usuário seleciona ou arrasta um PDF
-2. Aviso amarelo destacado: *"Parser PDF é experimental — resultado pode variar por banco"*
-3. Spinner de progresso "processando página X/Y"
-4. Modal de **preview** abre com:
-   - Cards de metadados: banco detectado, número de páginas, transações extraídas, período
-   - Tabela completa das transações extraídas
-   - Click em qualquer linha para **marcá-la como incorreta** (excluída da importação)
-   - Botões: **Cancelar** (descarta tudo) ou **Confirmar** (importa as marcadas OK)
-5. Após confirmação, dashboard normal aparece com as transações
-
-**Limitações conhecidas:**
-- PDFs **escaneados/imagem** não são suportados (sem OCR)
-- Cobertura estimada: **50-70% dos extratos brasileiros textuais** (varia por layout)
-- Descrições complexas em múltiplas linhas podem ser fragmentadas
-- Contraparte via heurística (menor precisão que o OFX estruturado)
-- **Sempre confira os valores no preview antes de importar**
+- Suporte a OFX SGML (v1.x) e XML (v2.x)
 
 ### 🌓 Tema Claro / Escuro
 - Alternância entre modo claro e escuro pelo botão no cabeçalho (ícone lua/sol)
@@ -232,15 +198,14 @@ Isso resolve o problema de textos aparecerem corrompidos (ex.: "DÃ‰BITO" em v
 
 ## Rotas Disponíveis
 
-| Método | Rota                     | Descrição                                    |
-|--------|--------------------------|----------------------------------------------|
-| GET    | `/`                      | Página principal (SPA de análise de extratos)|
-| GET    | `/static/app.js`         | JavaScript do frontend (parser + UI)         |
-| GET    | `/static/style.css`      | Estilos customizados                         |
-| GET    | `/exemplo.ofx`           | Arquivo OFX de exemplo para testes           |
-| GET    | `/exemplo-extrato.pdf`   | Arquivo PDF de exemplo para testes           |
+| Método | Rota                | Descrição                                    |
+|--------|---------------------|----------------------------------------------|
+| GET    | `/`                 | Página principal (SPA de análise de extratos)|
+| GET    | `/static/app.js`    | JavaScript do frontend (parser + UI)         |
+| GET    | `/static/style.css` | Estilos customizados                         |
+| GET    | `/exemplo.ofx`      | Arquivo OFX de exemplo para testes           |
 
-Não há endpoints de API — todo o processamento (OFX e PDF) ocorre client-side por questões de segurança.
+Não há endpoints de API — todo o processamento OFX ocorre client-side por questões de segurança.
 
 ## Arquitetura de Dados
 
@@ -315,15 +280,13 @@ Não há endpoints de API — todo o processamento (OFX e PDF) ocorre client-sid
 
 ## Recursos Ainda Não Implementados
 
-- 🔲 OCR para PDFs escaneados/imagem (Tesseract.js)
 - 🔲 Categorização automática de transações (mercado, transporte, lazer, etc.)
 - 🔲 Comparação entre múltiplos extratos (mês vs mês)
 - 🔲 Detecção de transações recorrentes (assinaturas, contas fixas)
 - 🔲 Persistência opcional (IndexedDB) para o usuário não precisar reenviar o arquivo
-- 🔲 Suporte a arquivos CSV/TXT/CNAB de outros formatos
+- 🔲 Suporte a arquivos CSV/TXT de outros formatos
 - 🔲 Detecção e alertas de gastos incomuns
 - 🔲 Exportação em outros formatos (Excel .xlsx, JSON)
-- 🔲 Templates específicos por banco no parser PDF (aumentar cobertura)
 
 ## Próximos Passos Recomendados
 
@@ -336,8 +299,8 @@ Não há endpoints de API — todo o processamento (OFX e PDF) ocorre client-sid
 ## Deploy
 - **Plataforma**: Cloudflare Pages
 - **Status**: 🚧 Rodando em sandbox de desenvolvimento
-- **Stack**: Hono + TypeScript + Vite + TailwindCSS + Chart.js + pdf.js
-- **Última atualização**: 2026-08-09 (Turn 8 — suporte a leitura de extratos PDF com parser genérico + preview modal obrigatório antes da importação)
+- **Stack**: Hono + TypeScript + Vite + TailwindCSS + Chart.js
+- **Última atualização**: 2026-08-09 (Turn 6 — botão exclusivo estorno, colunas de destinatário, modal de prévia, PDF profissional, fix modo claro)
 
 ## Comandos Úteis
 

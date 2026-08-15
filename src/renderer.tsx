@@ -45,18 +45,6 @@ export const renderer = jsxRenderer(({ children }) => {
           rel="stylesheet"
         />
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-        {/* pdf.js para leitura de arquivos PDF (extração de texto por coordenadas) */}
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              // Configura o worker do pdf.js (necessário para processar em background)
-              if (typeof pdfjsLib !== 'undefined') {
-                pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-              }
-            `,
-          }}
-        ></script>
         <link href="/static/style.css" rel="stylesheet" />
       </head>
       <body class="bg-slate-100 dark:bg-slate-950 min-h-screen transition-colors">{children}</body>
