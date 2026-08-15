@@ -184,6 +184,10 @@ function parseOFX(content) {
     const correctAction = getTagValue(block, 'CORRECTACTION');
     const isReversal = detectReversal(trnType, memo, name, correctFitId, correctAction);
 
+    // Detecção de boleto/título (multi-banco): TRNTYPE + keywords no MEMO/NAME
+    const isBoleto = detectBoleto(trnType, memo, name, amount);
+    const boletoReason = isBoleto ? detectBoletoReason(trnType, memo, name) : '';
+
     // Descrição consolidada
     let description = name || memo;
     if (name && memo && name !== memo) {
@@ -224,6 +228,8 @@ function parseOFX(content) {
       reversalRecipient,                       // Nome do destinatário original do débito
       correctFitId,                            // FITID da transação sendo corrigida
       correctAction,                           // REPLACE | DELETE (se OFX estruturado)
+      isBoleto,                                // boolean: é pagamento de boleto/título?
+      boletoReason,                            // ex: "Boleto", "Título", "DDA", "Ticket"
     });
   }
 
@@ -353,6 +359,83 @@ function detectReversalReason(memo, name, correctFitId) {
   for (const p of patterns) if (p.re.test(text)) return p.reason;
   if (correctFitId) return 'Correção (OFX)';
   return 'Estorno';
+}
+
+/**
+ * Detecta se uma transação é pagamento de boleto/título bancário.
+ *
+ * Estratégia multi-camada (funciona em vários bancos brasileiros):
+ *   1) TRNTYPE explícitos que sinalizam boleto:
+ *        PAYMENT, DIRECTDEBIT, REPEATPMT
+ *   2) Palavras-chave no MEMO/NAME (padrão da maioria dos bancos BR):
+ *        BOLETO, TITULO/TÍTULO, COBRANCA/COBRANÇA, LIQUIDACAO/LIQUIDAÇÃO,
+ *        FICHA DE COMPENSACAO, DDA (Débito Direto Autorizado),
+ *        PAG BOLETO/PAGTO BOLETO/PGTO BOLETO/PAGAMENTO BOLETO,
+ *        PAG ELETRONICO/PAGAMENTO ELETRONICO, CONVENIO (conta de consumo/tributo),
+ *        e a keyword específica do InfoPago/InfinitePay: TICKET
+ *   3) Descarta se for CRÉDITO puro sem contexto claro de boleto —
+ *      boleto pago = débito por natureza. (Recebimento de boleto via PIX
+ *      não é distinguível automaticamente e requer marcação manual.)
+ */
+function detectBoleto(trnType, memo, name, amount) {
+  const t = (trnType || '').toUpperCase();
+  const text = normalizeText(`${memo || ''} ${name || ''}`);
+
+  // 1) TRNTYPE explícitos
+  if (t === 'PAYMENT' || t === 'DIRECTDEBIT' || t === 'REPEATPMT') {
+    return true;
+  }
+
+  // 2) Palavras-chave (sem acento, minúsculo — normalizeText já cuida disso)
+  //    A ordem é do MAIS específico para o mais genérico para evitar falsos positivos.
+  const keywords = [
+    'boleto',
+    'liquidacao boleto', 'liq boleto', 'liq. boleto',
+    'pag boleto', 'pagto boleto', 'pgto boleto', 'pagamento boleto',
+    'pag. boleto', 'pagto. boleto', 'pgto. boleto',
+    'titulo bancario', 'titulo de cobranca',
+    'ficha de compensacao', 'ficha compensacao',
+    'dda',                             // Débito Direto Autorizado
+    'pag eletronico', 'pagamento eletronico',
+    'ticket',                          // InfoPago / InfinitePay usam "Ticket" para boletos pagos
+    'convenio',                        // pagamento de convênio (concessionárias/tributos)
+    'cobranca',                        // menos específico, vem por último
+  ];
+
+  const hit = keywords.some((kw) => text.includes(kw));
+  if (!hit) return false;
+
+  // 3) Filtro de segurança: se for crédito, só considera boleto quando
+  //    a keyword é bem específica (evita marcar recebimento PIX comum).
+  //    "Cobrança" sozinha em um crédito é ambígua.
+  if (typeof amount === 'number' && amount > 0) {
+    const strongCreditKw = /\b(boleto|titulo bancario|titulo de cobranca|ficha de compensacao|liquidacao boleto|pagamento eletronico)\b/;
+    return strongCreditKw.test(text);
+  }
+
+  return true;
+}
+
+/**
+ * Retorna um rótulo descritivo do tipo de boleto detectado, usado na UI.
+ * Ex.: "Boleto", "Título", "DDA", "Convênio", "Ticket"
+ */
+function detectBoletoReason(trnType, memo, name) {
+  const t = (trnType || '').toUpperCase();
+  const text = normalizeText(`${memo || ''} ${name || ''}`);
+
+  if (text.includes('dda')) return 'DDA';
+  if (text.includes('convenio')) return 'Convênio';
+  if (/\bticket\b/.test(text)) return 'Ticket';
+  if (text.includes('titulo')) return 'Título';
+  if (text.includes('ficha de compensacao') || text.includes('ficha compensacao')) return 'Ficha Compensação';
+  if (text.includes('boleto')) return 'Boleto';
+  if (text.includes('cobranca')) return 'Cobrança';
+  if (text.includes('pag eletronico') || text.includes('pagamento eletronico')) return 'Pagto Eletrônico';
+  if (t === 'PAYMENT') return 'Boleto';
+  if (t === 'DIRECTDEBIT') return 'Débito Automático';
+  if (t === 'REPEATPMT') return 'Débito Automático';
+  return 'Boleto';
 }
 
 /**
@@ -751,6 +834,7 @@ function renderDashboard() {
   renderAccountInfo();
   setupFilters();
   updateReversalUI();
+  updateBoletoUI();
   applyFilters();
 }
 
@@ -787,6 +871,21 @@ function updateReversalUI() {
       cpToggle.classList.remove('active');
       cpToggle.setAttribute('aria-pressed', 'false');
     }
+  }
+}
+
+/**
+ * Mostra/esconde o filtro de boleto no cabeçalho de filtros e atualiza o
+ * contador. Só aparece se houver pelo menos 1 boleto detectado no arquivo.
+ */
+function updateBoletoUI() {
+  const wrapper = document.getElementById('boleto-filter-wrapper');
+  const countEl = document.getElementById('boleto-count');
+  const total = state.transactions.filter((t) => t.isBoleto).length;
+  if (countEl) countEl.textContent = String(total);
+  if (wrapper) {
+    if (total > 0) wrapper.classList.remove('hidden');
+    else wrapper.classList.add('hidden');
   }
 }
 
@@ -890,6 +989,15 @@ function setupFilters() {
     });
   }
 
+  // Filtro boleto (dropdown)
+  const filterBoleto = document.getElementById('filter-boleto');
+  if (filterBoleto) {
+    filterBoleto.addEventListener('change', () => {
+      state.currentPage = 1;
+      applyFilters();
+    });
+  }
+
   // Regra de coer\u00eancia: quando o TIPO muda, valida se o filtro de contraparte
   // ainda \u00e9 v\u00e1lido no novo escopo (n\u00e3o pode divergir).
   filterType.addEventListener('change', () => {
@@ -932,6 +1040,10 @@ function setupFilters() {
     filterMin.value = '';
     filterMax.value = '';
     filterSort.value = 'date-desc';
+    const filterReversal = document.getElementById('filter-reversal');
+    if (filterReversal) filterReversal.value = 'all';
+    const filterBoleto = document.getElementById('filter-boleto');
+    if (filterBoleto) filterBoleto.value = 'all';
     state.currentPage = 1;
     applyFilters();
   });
@@ -1277,6 +1389,14 @@ function applyFilters() {
     else if (rvMode === 'exclude') result = result.filter((t) => !t.isReversal);
   }
 
+  // Filtro por pagamento de boleto (dropdown do painel de filtros)
+  const filterBoletoEl = document.getElementById('filter-boleto');
+  if (filterBoletoEl) {
+    const blMode = filterBoletoEl.value;
+    if (blMode === 'only') result = result.filter((t) => t.isBoleto);
+    else if (blMode === 'exclude') result = result.filter((t) => !t.isBoleto);
+  }
+
   // Botão EXCLUSIVO de estorno (Contrapartes) - independente do filtro de tipo
   // Sobrepõe qualquer outro filtro: mostra APENAS estornos.
   if (state.reversalOnlyMode) {
@@ -1365,10 +1485,14 @@ function renderTable() {
       const reversalBadge = t.isReversal
         ? `<span class="badge badge-reversal ml-1" title="${escapeHtml(t.reversalReason || 'Estorno')}"><i class="fas fa-undo mr-1"></i>${escapeHtml(t.reversalReason || 'Estorno')}</span>`
         : '';
+      const boletoBadge = t.isBoleto
+        ? `<span class="badge badge-boleto ml-1" title="${escapeHtml(t.boletoReason || 'Boleto')}"><i class="fas fa-barcode mr-1"></i>${escapeHtml(t.boletoReason || 'Boleto')}</span>`
+        : '';
       const isSelected = state.selectedIds.has(t.id);
       const rowClass = isSelected
         ? 'bg-blue-50 dark:bg-blue-900/20'
-        : (t.isReversal ? 'bg-amber-50/40 dark:bg-amber-900/10' : '');
+        : (t.isReversal ? 'bg-amber-50/40 dark:bg-amber-900/10'
+          : (t.isBoleto ? 'bg-blue-50/40 dark:bg-blue-900/10' : ''));
       const balBefore = t.balanceBefore != null
         ? `<span class="text-gray-600 dark:text-slate-300">${formatCurrency(t.balanceBefore)}</span>`
         : dash;
@@ -1397,6 +1521,7 @@ function renderTable() {
               ${getTrnTypeLabel(t.trnType)}
             </span>
             ${reversalBadge}
+            ${boletoBadge}
           </td>
           <td class="px-3 py-3 text-sm text-gray-800 dark:text-slate-200 max-w-md">${escapeHtml(t.description)}</td>
           <td class="px-3 py-3 text-sm text-gray-700 dark:text-slate-300">${cpDisplay}</td>
@@ -1424,6 +1549,9 @@ function renderTable() {
         const cpLabel = t.type === 'credit' ? 'De' : 'Para';
         const reversalBadge = t.isReversal
           ? `<span class="badge badge-reversal ml-1"><i class="fas fa-undo mr-1"></i>${escapeHtml(t.reversalReason || 'Estorno')}</span>`
+          : '';
+        const boletoBadge = t.isBoleto
+          ? `<span class="badge badge-boleto ml-1"><i class="fas fa-barcode mr-1"></i>${escapeHtml(t.boletoReason || 'Boleto')}</span>`
           : '';
         const isSelected = state.selectedIds.has(t.id);
         const cardClass = isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : '';
@@ -1458,6 +1586,7 @@ function renderTable() {
                     ${getTrnTypeLabel(t.trnType)}
                   </span>
                   ${reversalBadge}
+                  ${boletoBadge}
                 </div>
               </label>
               <div class="text-sm font-bold whitespace-nowrap ${valueClass}">${sign} ${formatCurrency(t.absAmount)}</div>
@@ -1794,6 +1923,8 @@ const EXPORT_COLUMNS = [
   'Motivo Estorno',
   'Destinatário Estorno',
   'FITID Original',
+  'Boleto',
+  'Tipo Boleto',
   'TxId',
   'Valor',
   'Saldo Antes',
@@ -1802,14 +1933,21 @@ const EXPORT_COLUMNS = [
 
 /** Monta uma linha de exportação a partir de uma transação */
 function buildExportRow(t) {
+  const tipoBase = getTrnTypeLabel(t.trnType);
+  const tipoFlags = [];
+  if (t.isReversal) tipoFlags.push('Estorno');
+  if (t.isBoleto) tipoFlags.push('Boleto');
+  const tipoStr = tipoFlags.length ? `${tipoBase} (${tipoFlags.join(', ')})` : tipoBase;
   return [
     formatDateTime(t.date),
-    getTrnTypeLabel(t.trnType) + (t.isReversal ? ' (Estorno)' : ''),
+    tipoStr,
     t.description || '',
     t.counterparty || '',
     t.isReversal ? (t.reversalReason || 'Estorno') : '',
     t.isReversal ? (t.reversalRecipient || '') : '',
     t.isReversal ? (t.correctFitId || '') : '',
+    t.isBoleto ? 'Sim' : '',
+    t.isBoleto ? (t.boletoReason || 'Boleto') : '',
     t.id || '',
     (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount),
     t.balanceBefore != null ? formatCurrency(t.balanceBefore) : '',
@@ -1981,6 +2119,9 @@ function collectAppliedFilters() {
   if (reversalEl && reversalEl.value === 'only') list.push('Somente estornos');
   if (reversalEl && reversalEl.value === 'exclude') list.push('Sem estornos');
   if (state.reversalOnlyMode) list.push('Botão exclusivo: apenas estornos');
+  const boletoEl = document.getElementById('filter-boleto');
+  if (boletoEl && boletoEl.value === 'only') list.push('Somente boletos');
+  if (boletoEl && boletoEl.value === 'exclude') list.push('Sem boletos');
   if (state.selectedIds.size > 0) list.push(`Seleção manual: ${state.selectedIds.size} linha(s)`);
   return list;
 }
@@ -2188,6 +2329,10 @@ function doExportPDF() {
   const totalReversal = source
     .filter((t) => t.isReversal)
     .reduce((s, t) => s + t.absAmount, 0);
+  const boletoCount = source.filter((t) => t.isBoleto).length;
+  const totalBoleto = source
+    .filter((t) => t.isBoleto)
+    .reduce((s, t) => s + t.absAmount, 0);
 
   const summaryCards = [
     { label: 'Transações', value: String(source.length), color: COL.slate700, accent: COL.accent },
@@ -2202,6 +2347,15 @@ function doExportPDF() {
       sub: `${reversalCount} operações`,
       color: COL.amber,
       accent: COL.amber,
+    });
+  }
+  if (boletoCount > 0) {
+    summaryCards.push({
+      label: 'Boletos',
+      value: formatCurrency(totalBoleto),
+      sub: `${boletoCount} pagamentos`,
+      color: [30, 64, 175], // blue-800
+      accent: [37, 99, 235], // blue-600
     });
   }
 
@@ -2301,38 +2455,48 @@ function doExportPDF() {
       0: { cellWidth: 22 },                        // Data
       1: { cellWidth: 18 },                        // Tipo
       2: { cellWidth: 'auto' },                    // Descrição
-      3: { cellWidth: 32 },                        // Contraparte
-      4: { cellWidth: 18 },                        // Motivo Estorno
-      5: { cellWidth: 26 },                        // Destinatário
-      6: { cellWidth: 20, font: 'courier', fontSize: 5.5 }, // FITID Original
-      7: { cellWidth: 20, font: 'courier', fontSize: 5.5 }, // TxId
-      8: { cellWidth: 22, halign: 'right', fontStyle: 'bold' }, // Valor
-      9: { cellWidth: 20, halign: 'right' },       // Saldo Antes
-      10: { cellWidth: 22, halign: 'right', fontStyle: 'bold' }, // Saldo Após
+      3: { cellWidth: 30 },                        // Contraparte
+      4: { cellWidth: 16 },                        // Motivo Estorno
+      5: { cellWidth: 22 },                        // Destinatário Estorno
+      6: { cellWidth: 18, font: 'courier', fontSize: 5.5 }, // FITID Original
+      7: { cellWidth: 10, halign: 'center' },      // Boleto (Sim/vazio)
+      8: { cellWidth: 16 },                        // Tipo Boleto
+      9: { cellWidth: 18, font: 'courier', fontSize: 5.5 }, // TxId
+      10: { cellWidth: 22, halign: 'right', fontStyle: 'bold' }, // Valor
+      11: { cellWidth: 18, halign: 'right' },      // Saldo Antes
+      12: { cellWidth: 20, halign: 'right', fontStyle: 'bold' }, // Saldo Após
     },
     didParseCell: (data) => {
       if (data.section !== 'body') return;
       const t = source[data.row.index];
-      // Estornos: fundo amber suave em toda a linha
+      // Estornos: fundo amber suave em toda a linha (prioridade sobre boleto)
       if (t && t.isReversal) {
         data.cell.styles.fillColor = COL.reversalBg;
+      } else if (t && t.isBoleto) {
+        // Boleto: fundo azul suave
+        data.cell.styles.fillColor = [219, 234, 254]; // blue-100
       }
-      // Coluna VALOR: verde ou vermelho
-      if (data.column.index === 8) {
+      // Coluna VALOR (10): verde ou vermelho
+      if (data.column.index === 10) {
         data.cell.styles.textColor = t.amount >= 0 ? COL.green : COL.red;
       }
-      // Saldo após negativo: vermelho
-      if (data.column.index === 10 && t.balanceAfter != null && t.balanceAfter < 0) {
+      // Saldo após (12) negativo: vermelho
+      if (data.column.index === 12 && t.balanceAfter != null && t.balanceAfter < 0) {
         data.cell.styles.textColor = COL.red;
       }
-      // Motivo Estorno: amber
+      // Motivo Estorno (4): amber
       if (data.column.index === 4 && t.isReversal) {
         data.cell.styles.textColor = COL.amber;
         data.cell.styles.fontStyle = 'bold';
       }
-      // Destinatário Estorno: amber escuro
+      // Destinatário Estorno (5): amber escuro
       if (data.column.index === 5 && t.isReversal && t.reversalRecipient) {
         data.cell.styles.textColor = [146, 64, 14]; // amber-800
+        data.cell.styles.fontStyle = 'bold';
+      }
+      // Boleto (7-8): azul escuro
+      if ((data.column.index === 7 || data.column.index === 8) && t.isBoleto) {
+        data.cell.styles.textColor = [30, 64, 175]; // blue-800
         data.cell.styles.fontStyle = 'bold';
       }
     },
@@ -2398,24 +2562,38 @@ function doExportPDF() {
   doc.text(formatCurrency(balance), totalCardX + totalCardW - 3, endY + 9, { align: 'right' });
 
   // ==========================================================================
-  // LEGENDA (se houver estornos)
+  // LEGENDA (se houver estornos ou boletos)
   // ==========================================================================
-  if (reversalCount > 0) {
+  const boletoCountExport = source.filter((t) => t.isBoleto).length;
+  if (reversalCount > 0 || boletoCountExport > 0) {
     let legY = endY + totalCardH + 4;
     if (legY > pageHeight - 15) {
       doc.addPage();
       legY = 15;
     }
-    doc.setFillColor(...COL.reversalBg);
-    doc.rect(margin, legY, 4, 4, 'F');
     doc.setFontSize(7);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(...COL.slate500);
-    doc.text(
-      'Linhas em destaque amarelo indicam transações de estorno/devolução. O asterisco (*) na coluna Tipo confirma o estorno.',
-      margin + 6,
-      legY + 3
-    );
+
+    if (reversalCount > 0) {
+      doc.setFillColor(...COL.reversalBg);
+      doc.rect(margin, legY, 4, 4, 'F');
+      doc.text(
+        'Linhas em amarelo: estorno/devolução (marcadas também na coluna Tipo).',
+        margin + 6,
+        legY + 3
+      );
+      legY += 5;
+    }
+    if (boletoCountExport > 0) {
+      doc.setFillColor(219, 234, 254); // blue-100
+      doc.rect(margin, legY, 4, 4, 'F');
+      doc.text(
+        'Linhas em azul: pagamento de boleto/título bancário (col. Boleto = Sim).',
+        margin + 6,
+        legY + 3
+      );
+    }
   }
 
   doc.save(`extrato_${formatDateISO(new Date())}.pdf`);

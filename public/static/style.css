@@ -43,6 +43,10 @@ body {
   background-color: #fef3c7;
   color: #92400e;
 }
+.badge-boleto {
+  background-color: #dbeafe;
+  color: #1e40af;
+}
 .dark .badge-credit {
   background-color: rgba(6, 95, 70, 0.35);
   color: #6ee7b7;
@@ -54,6 +58,10 @@ body {
 .dark .badge-reversal {
   background-color: rgba(146, 64, 14, 0.35);
   color: #fcd34d;
+}
+.dark .badge-boleto {
+  background-color: rgba(30, 64, 175, 0.35);
+  color: #93c5fd;
 }
 
 /* Scrollbar */

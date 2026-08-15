@@ -369,6 +369,21 @@ app.get('/', (c) => {
                   </span>
                 </label>
               </div>
+              <div id="boleto-filter-wrapper" class="hidden">
+                <label class="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-700 dark:text-slate-200">
+                  <select
+                    id="filter-boleto"
+                    class="border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="all">Todos (com e sem boletos)</option>
+                    <option value="only">Somente pagamento de boletos</option>
+                    <option value="exclude">Ocultar pagamento de boletos</option>
+                  </select>
+                  <span id="boleto-count-badge" class="text-xs bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-2 py-1 rounded-full">
+                    <i class="fas fa-barcode mr-1"></i><span id="boleto-count">0</span>
+                  </span>
+                </label>
+              </div>
               <div class="flex-1"></div>
               <div class="flex flex-wrap gap-2">
                 <button
