@@ -8,12 +8,16 @@ export const renderer = jsxRenderer(({ children }) => {
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Leitor de Extrato Bancário OFX</title>
         {/*
-          1) Anti-flash: aplica classe .dark no <html> ANTES do render.
-             Uso add/remove explícitos para garantir estado correto em ambas as direções.
+          1) Configura Tailwind Play CDN ANTES de carregá-lo.
+             O CDN lê window.tailwind.config na inicialização.
+             Também aplica classe .dark no <html> ANTES do render (anti-flash).
+             CRÍTICO: config precisa vir ANTES da anti-flash porque o CDN
+             pode fazer scanning inicial imediatamente após carregar.
         */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
+              window.tailwind = { config: { darkMode: 'class' } };
               (function() {
                 try {
                   var saved = localStorage.getItem('theme');
@@ -24,18 +28,6 @@ export const renderer = jsxRenderer(({ children }) => {
                   else root.classList.remove('dark');
                 } catch(e) {}
               })();
-            `,
-          }}
-        ></script>
-        {/*
-          2) Configura Tailwind Play CDN ANTES de carregá-lo.
-             O CDN lê window.tailwind.config na inicialização, então definir aqui
-             garante que darkMode:'class' seja aplicado.
-        */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              window.tailwind = { config: { darkMode: 'class' } };
             `,
           }}
         ></script>

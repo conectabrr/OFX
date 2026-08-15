@@ -188,6 +188,10 @@ function parseOFX(content) {
     const isBoleto = detectBoleto(trnType, memo, name, amount);
     const boletoReason = isBoleto ? detectBoletoReason(trnType, memo, name) : '';
 
+    // Detecção de PIX: TRNTYPE contém PIX, OU memo/name contém "PIX"/"pix"
+    // (usado para consolidar contrapartes por NOME em vez de por identificador)
+    const isPix = detectPix(trnType, memo, name);
+
     // Descrição consolidada
     let description = name || memo;
     if (name && memo && name !== memo) {
@@ -230,6 +234,12 @@ function parseOFX(content) {
       correctAction,                           // REPLACE | DELETE (se OFX estruturado)
       isBoleto,                                // boolean: é pagamento de boleto/título?
       boletoReason,                            // ex: "Boleto", "Título", "DDA", "Ticket"
+      isPix,                                   // boolean: é transação PIX?
+      // Chave de agrupamento normalizada para o painel de "Movimentos".
+      // PIX: usa APENAS o nome normalizado (sem identificadores únicos),
+      // caso contrário mesmo destinatário aparece em cards separados por txId.
+      // Não-PIX: usa o rótulo completo (nome + banco/ag/cc) como antes.
+      movementKey: buildMovementKey(counterparty, isPix),
     });
   }
 
@@ -472,6 +482,53 @@ function getBlockValue(text, blockTag) {
 }
 
 /**
+ * Detecta se uma transação é PIX.
+ * Bancos brasileiros indicam PIX de várias formas:
+ *  - TRNTYPE contendo "PIX" (extensão comum de alguns bancos)
+ *  - MEMO/NAME começa com "Pix", "PIX enviado", "PIX recebido", etc.
+ *  - TxId de 32 hex é o "EndToEndId" do PIX
+ */
+function detectPix(trnType, memo, name) {
+  if (trnType && /PIX/i.test(trnType)) return true;
+  const text = normalizeText(`${memo} ${name}`);
+  // Palavras-chave (sem acento, minúsculo)
+  return /\bpix\b/.test(text);
+}
+
+/**
+ * Constrói a chave de agrupamento usada no painel de "Movimentos".
+ *
+ * Para PIX, agrupamos por NOME apenas (normalizado), porque cada PIX
+ * carrega um EndToEndId único que fragmentaria o mesmo destinatário
+ * em vários cards. O usuário quer ver "João Silva" uma vez, não uma
+ * vez por transação.
+ *
+ * Para não-PIX (TED, DOC, boleto, tarifa), usamos o rótulo completo
+ * (nome + banco/ag/cc), pois ali a conta bancária é o dado relevante
+ * para diferenciar movimentos.
+ */
+function buildMovementKey(counterparty, isPix) {
+  if (isPix) {
+    // PIX: usa nome normalizado (uppercase + trim + colapsa espaços).
+    // Se não temos nome, cai no label mesmo (comportamento anterior).
+    const rawName = (counterparty && counterparty.name) || '';
+    const clean = rawName
+      .toUpperCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (clean) return clean;
+    // Fallback: se não veio nome, usa o label. Se nem isso, retorna vazio.
+    return (counterparty && counterparty.label) || '';
+  }
+  // Não-PIX: preserva label completo (nome · Bco X Ag Y Cc Z)
+  return (
+    (counterparty && counterparty.label) ||
+    (counterparty && counterparty.name) ||
+    ''
+  );
+}
+
+/**
  * Extrai a conta contraparte (destino em débito, origem em crédito).
  *
  * Fontes possíveis, em ordem de prioridade:
@@ -519,13 +576,33 @@ function extractCounterparty(block, memo, name) {
     if (bcoMatch) result.bank = bcoMatch[1];
   }
 
-  // 4. Nome extraído do memo: pega palavras após verbos comuns de transferência
+  // 4. Nome extraído do memo: pega palavras após verbos comuns de transferência.
+  //    Trata os padrões mais comuns em extratos brasileiros:
+  //      "Enviado para NOME COMPLETO - ..."           (Itaú, Bradesco, Nubank PIX)
+  //      "Recebido de NOME COMPLETO - ..."            (idem)
+  //      "PIX/TED/DOC ENVIADO PARA NOME - ..."        (BB, Caixa)
+  //      "TRANSFERENCIA RECEBIDA DE NOME"             (Santander)
+  //      "PAGAMENTO A/PARA NOME"                      (boletos com favorecido)
+  //    Aceita nomes em maiúsculas OU capitalizados (JEAN CARLO / Jean Carlo).
   if (!result.name) {
-    const nameMatch = source.match(
-      /(?:PIX|TED|DOC|TRANSF(?:ERENCIA)?|PAGAMENTO|PAGTO)\s+(?:ENVIADO|ENVIADA|RECEBIDO|RECEBIDA|CRED|DEB|PARA|A|DE)?\s*([A-ZÀ-Ú][A-ZÀ-Ú\s.]{2,60}?)(?:\s+(?:AG|CC|BCO|BANCO|CPF|CNPJ|-)|\s*$)/i
-    );
-    if (nameMatch) {
-      result.name = nameMatch[1].trim().replace(/\s+/g, ' ');
+    const patterns = [
+      // "Enviado para NOME" / "Recebido de NOME" — sem PIX antes (formato Itaú/Bradesco)
+      /\b(?:ENVIAD[OA]|RECEBID[OA])\s+(?:PARA|DE|A)\s+([A-ZÀ-Úa-zà-ú][A-ZÀ-Úa-zà-ú\s.'-]{2,80}?)(?=\s+-\s|\s+(?:AG|CC|BCO|BANCO|CPF|CNPJ|TRANSA[CÇ][AÃ]O|#)|$)/i,
+      // "PIX/TED/DOC/TRANSF ENVIADO/RECEBIDO PARA/DE/A NOME"
+      /\b(?:PIX|TED|DOC|TRANSF(?:ERENCIA)?|PAGAMENTO|PAGTO)\s+(?:ENVIAD[OA]|RECEBID[OA]|CRED|DEB)?\s*(?:PARA|A|DE)\s+([A-ZÀ-Úa-zà-ú][A-ZÀ-Úa-zà-ú\s.'-]{2,80}?)(?=\s+-\s|\s+(?:AG|CC|BCO|BANCO|CPF|CNPJ|TRANSA[CÇ][AÃ]O|#)|$)/i,
+      // Fallback antigo (nomes em caixa alta contíguos)
+      /(?:PIX|TED|DOC|TRANSF(?:ERENCIA)?|PAGAMENTO|PAGTO)\s+([A-ZÀ-Ú][A-ZÀ-Ú\s.]{2,60}?)(?:\s+(?:AG|CC|BCO|BANCO|CPF|CNPJ|-)|\s*$)/i,
+    ];
+    for (const re of patterns) {
+      const nameMatch = source.match(re);
+      if (nameMatch && nameMatch[1]) {
+        const cleaned = nameMatch[1].trim().replace(/\s+/g, ' ');
+        // Descarta se ficou pequeno demais ou é palavra-chave contexto (ex.: DÉBITO)
+        if (cleaned.length >= 3 && !/^(DEBIT[OU]?|CREDIT[OU]?|PIX|TED|DOC)$/i.test(cleaned)) {
+          result.name = cleaned;
+          break;
+        }
+      }
     }
   }
 
@@ -980,6 +1057,25 @@ function setupFilters() {
     el.addEventListener('change', handler);
   });
 
+  // === Botão borracha (eraser) do filtro Conta Destino/Origem ===
+  // Atualiza visibilidade do botão sempre que o input muda.
+  filterCounterparty.addEventListener('input', updateCounterpartyClearBtn);
+  const clearCpBtn = document.getElementById('filter-counterparty-clear');
+  if (clearCpBtn) {
+    clearCpBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      filterCounterparty.value = '';
+      updateCounterpartyClearBtn();
+      state.currentPage = 1;
+      applyFilters();
+      // Devolve o foco ao input para o usuário poder digitar de novo se quiser
+      filterCounterparty.focus();
+    });
+  }
+  // Estado inicial do botão eraser (pode já ter valor pré-preenchido)
+  updateCounterpartyClearBtn();
+
   // Filtro estorno (checkbox)
   const filterReversal = document.getElementById('filter-reversal');
   if (filterReversal) {
@@ -1009,13 +1105,14 @@ function setupFilters() {
     );
     if (!entry) return;
     const [, data] = entry;
-    // Se filtrou por CR\u00c9DITO mas a contraparte s\u00f3 tem d\u00e9bitos (ou vice-versa),
+    // Se filtrou por CRÉDITO mas o movimento só tem débitos (ou vice-versa),
     // limpa o filtro de contraparte automaticamente
     if (typeF === 'credit' && data.creditCount === 0) {
       filterCounterparty.value = '';
     } else if (typeF === 'debit' && data.debitCount === 0) {
       filterCounterparty.value = '';
     }
+    updateCounterpartyClearBtn();
   });
 
   // Mudança de tamanho de página
@@ -1044,6 +1141,7 @@ function setupFilters() {
     if (filterReversal) filterReversal.value = 'all';
     const filterBoleto = document.getElementById('filter-boleto');
     if (filterBoleto) filterBoleto.value = 'all';
+    updateCounterpartyClearBtn();
     state.currentPage = 1;
     applyFilters();
   });
@@ -1052,37 +1150,54 @@ function setupFilters() {
 }
 
 /**
- * Popula o mapa completo de contrapartes com totais por tipo.
+ * Popula o mapa completo de movimentos (antigas "contrapartes") com totais por tipo.
  * Chamado uma vez ao carregar o arquivo.
+ *
+ * Regras importantes:
+ *  - Chave de agrupamento: usa t.movementKey (consolida PIX por nome).
+ *  - Estornos NÃO contam no débito, apenas no crédito (semanticamente
+ *    um estorno é sempre uma entrada de dinheiro, independente do
+ *    campo type do OFX). O total do estorno também é rastreado
+ *    separadamente para o badge "Somente estornos".
+ *  - Cards herdam a "cor dominante": só créditos = verde, só débitos =
+ *    vermelho, mistos = neutro.
  */
 function populateCounterpartyList() {
   const nameCount = new Map();
   state.transactions.forEach((t) => {
-    const key = t.counterpartyName || t.counterparty;
+    // Preferência: chave normalizada de movimento (agrupamento PIX).
+    // Fallbacks: nome, rótulo completo.
+    const key = t.movementKey || t.counterpartyName || t.counterparty;
     if (!key) return;
     if (!nameCount.has(key)) {
       nameCount.set(key, {
         count: 0,
         creditCount: 0,
         debitCount: 0,
-        reversalCount: 0,        // total de estornos com essa contraparte
+        reversalCount: 0,        // total de estornos com esse movimento
         totalCredit: 0,
         totalDebit: 0,
         totalReversal: 0,        // valor absoluto acumulado dos estornos
+        displayName: t.counterpartyName || t.counterparty || key,
       });
     }
     const entry = nameCount.get(key);
     entry.count++;
-    if (t.type === 'credit') {
+
+    // ★ Regra do usuário: "estorno sempre será um crédito, então não
+    // deverá aparecer no card débito". Portanto: se é estorno, contamos
+    // no crédito INDEPENDENTE do sinal do OFX.
+    if (t.isReversal) {
+      entry.reversalCount++;
+      entry.totalReversal += t.absAmount;
+      entry.creditCount++;
+      entry.totalCredit += t.absAmount;
+    } else if (t.type === 'credit') {
       entry.creditCount++;
       entry.totalCredit += t.amount;
     } else {
       entry.debitCount++;
       entry.totalDebit += t.absAmount;
-    }
-    if (t.isReversal) {
-      entry.reversalCount++;
-      entry.totalReversal += t.absAmount;
     }
   });
   const sorted = [...nameCount.entries()].sort((a, b) => b[1].count - a[1].count);
@@ -1091,10 +1206,20 @@ function populateCounterpartyList() {
 }
 
 /**
- * Renderiza o painel de contrapartes, respeitando o filtro de tipo.
- *  - Se tipo = "credit", mostra apenas contrapartes com créditos
- *  - Se tipo = "debit", mostra apenas contrapartes com débitos
- *  - Se tipo = "all", mostra todas
+ * Renderiza o painel de "Movimentos" (antigas contrapartes) com cards
+ * translúcidos e mais informação minimalista.
+ *
+ *  - Verde translúcido: card contém APENAS créditos
+ *  - Vermelho translúcido: card contém APENAS débitos
+ *  - Neutro: card contém créditos + débitos (misto)
+ *  - Contorno azul: card atualmente selecionado
+ *
+ * Cada card mostra:
+ *  - Nome + badge de estornos (se houver)
+ *  - Contagem de transações
+ *  - Totais crédito/débito/estorno (só o relevante)
+ *  - Ticket médio da direção dominante
+ *
  * Atualiza também o datalist do autocomplete com o mesmo escopo.
  */
 function renderCounterpartyPanel() {
@@ -1106,7 +1231,7 @@ function renderCounterpartyPanel() {
   const reversalOnly = state.reversalOnlyMode;
 
   // Filtra a lista pela tipagem selecionada.
-  // Se o modo "apenas estornos" está ativo, mostra somente contrapartes que TÊM estornos.
+  // Se o modo "apenas estornos" está ativo, mostra somente movimentos que TÊM estornos.
   let scoped = (state.counterpartyList || []).filter(([, data]) => {
     if (reversalOnly) return data.reversalCount > 0;
     if (typeFilter === 'credit') return data.creditCount > 0;
@@ -1132,7 +1257,7 @@ function renderCounterpartyPanel() {
   if (scoped.length === 0) {
     const emptyMsg = reversalOnly
       ? 'Nenhum estorno neste extrato.'
-      : 'Nenhuma contraparte encontrada para este tipo.';
+      : 'Nenhum movimento encontrado para este tipo.';
     panel.innerHTML = `<p class="text-xs text-slate-400 italic p-2 col-span-full">${emptyMsg}</p>`;
     if (countLabel) countLabel.textContent = '';
     return;
@@ -1152,44 +1277,46 @@ function renderCounterpartyPanel() {
   panel.innerHTML = scoped
     .map(([name, data]) => {
       const isActive = currentFilter && name.toLowerCase() === currentFilter;
-      const activeClass = isActive
-        ? 'bg-blue-100 dark:bg-blue-900 border-blue-400 dark:border-blue-500 text-blue-800 dark:text-blue-200'
-        : 'bg-white dark:bg-slate-800 hover:bg-gray-50 dark:hover:bg-slate-700 border-gray-200 dark:border-slate-600 text-gray-700 dark:text-slate-200';
-      const flows = [];
-      // Modo "somente estornos": mostra apenas o total de estornos
+
+      // === Escolhe a variante visual do card ===
+      // Verde: só créditos (creditCount > 0 e debitCount === 0)
+      // Vermelho: só débitos
+      // Neutro: misto (ambos)
+      let variantClass = 'mv-mixed';
+      if (data.creditCount > 0 && data.debitCount === 0) {
+        variantClass = 'mv-credit';
+      } else if (data.debitCount > 0 && data.creditCount === 0) {
+        variantClass = 'mv-debit';
+      }
+      if (isActive) variantClass += ' mv-active';
+
+      // === Constrói os totais exibidos ===
+      const totals = [];
       if (reversalOnly) {
-        if (data.reversalCount > 0) {
-          flows.push(
-            `<span class="text-amber-600 dark:text-amber-400" title="Estornos/devoluções"><i class="fas fa-undo"></i> ${formatCurrency(
-              data.totalReversal
-            )}</span>`
-          );
-        }
+        // Modo "somente estornos": mostra apenas o total de estornos
+        totals.push(
+          `<span class="mv-total-reversal" title="Estornos/devoluções"><i class="fas fa-undo mr-1"></i>${formatCurrency(
+            data.totalReversal
+          )}</span>`
+        );
       } else {
-        // Modo normal: mostra créditos e/ou débitos conforme o filtro de tipo
+        // Modo normal
         if (typeFilter !== 'debit' && data.totalCredit > 0) {
-          flows.push(
-            `<span class="text-green-600 dark:text-green-400" title="Créditos"><i class="fas fa-arrow-up"></i> ${formatCurrency(
+          totals.push(
+            `<span class="mv-total-credit" title="${data.creditCount} crédito(s)"><i class="fas fa-arrow-up mr-1"></i>${formatCurrency(
               data.totalCredit
             )}</span>`
           );
         }
         if (typeFilter !== 'credit' && data.totalDebit > 0) {
-          flows.push(
-            `<span class="text-red-600 dark:text-red-400" title="Débitos"><i class="fas fa-arrow-down"></i> ${formatCurrency(
+          totals.push(
+            `<span class="mv-total-debit" title="${data.debitCount} débito(s)"><i class="fas fa-arrow-down mr-1"></i>${formatCurrency(
               data.totalDebit
             )}</span>`
           );
         }
-        // Sempre mostra o badge de estornos quando existir (independente do tipo)
-        if (data.reversalCount > 0) {
-          flows.push(
-            `<span class="text-amber-600 dark:text-amber-400" title="Estornos/devoluções"><i class="fas fa-undo"></i> ${data.reversalCount} · ${formatCurrency(
-              data.totalReversal
-            )}</span>`
-          );
-        }
       }
+
       const shownCount = reversalOnly
         ? data.reversalCount
         : typeFilter === 'credit'
@@ -1197,24 +1324,50 @@ function renderCounterpartyPanel() {
           : typeFilter === 'debit'
           ? data.debitCount
           : data.count;
-      // Badge de estorno sempre visível quando há estornos
+
+      // Badge de estorno (independente do tipo)
       const reversalBadge =
         data.reversalCount > 0
-          ? `<span class="badge badge-reversal ml-1 align-middle" title="${data.reversalCount} estorno(s)"><i class="fas fa-undo mr-0.5"></i>${data.reversalCount}</span>`
+          ? ` <span class="badge badge-reversal align-middle" title="${data.reversalCount} estorno(s)"><i class="fas fa-undo mr-0.5"></i>${data.reversalCount}</span>`
           : '';
+
+      // === Ticket médio (info a mais, minimalista) ===
+      // Prioriza a direção dominante. Se PIX-only: mostra ticket médio dos créditos ou débitos.
+      let avgLine = '';
+      if (!reversalOnly) {
+        if (variantClass.includes('mv-credit') && data.creditCount > 0) {
+          const avg = data.totalCredit / data.creditCount;
+          avgLine = `<div class="mv-avg"><i class="fas fa-chart-line mr-1"></i>Ticket médio: ${formatCurrency(avg)}</div>`;
+        } else if (variantClass.includes('mv-debit') && data.debitCount > 0) {
+          const avg = data.totalDebit / data.debitCount;
+          avgLine = `<div class="mv-avg"><i class="fas fa-chart-line mr-1"></i>Ticket médio: ${formatCurrency(avg)}</div>`;
+        } else if (data.count > 0) {
+          // Misto: mostra saldo líquido
+          const net = data.totalCredit - data.totalDebit;
+          const netClass = net >= 0 ? 'mv-total-credit' : 'mv-total-debit';
+          avgLine = `<div class="mv-avg"><i class="fas fa-balance-scale mr-1"></i>Saldo: <span class="${netClass}">${formatCurrency(net)}</span></div>`;
+        }
+      } else if (data.reversalCount > 0) {
+        const avg = data.totalReversal / data.reversalCount;
+        avgLine = `<div class="mv-avg"><i class="fas fa-chart-line mr-1"></i>Média por estorno: ${formatCurrency(avg)}</div>`;
+      }
+
+      const displayName = data.displayName || name;
+
       return `
         <button type="button" data-cp="${escapeHtml(name)}"
-          class="counterparty-item text-left w-full border ${activeClass} rounded-lg px-3 py-2 text-xs transition">
-          <div class="font-semibold truncate">${escapeHtml(name)}${reversalBadge}</div>
-          <div class="flex items-center justify-between mt-1 gap-2">
-            <span class="text-gray-500 dark:text-slate-400 whitespace-nowrap">${shownCount} trans.</span>
-            <div class="flex gap-2 text-[11px] flex-wrap justify-end">${flows.join('')}</div>
+          class="movement-card ${variantClass}" title="${escapeHtml(displayName)}">
+          <span class="mv-name">${escapeHtml(displayName)}${reversalBadge}</span>
+          <div class="mv-meta">
+            <span class="whitespace-nowrap"><i class="fas fa-hashtag mr-1 opacity-60"></i>${shownCount} trans.</span>
+            <div class="mv-totals">${totals.join('')}</div>
           </div>
+          ${avgLine}
         </button>`;
     })
     .join('');
 
-  panel.querySelectorAll('.counterparty-item').forEach((btn) => {
+  panel.querySelectorAll('.movement-card').forEach((btn) => {
     btn.addEventListener('click', () => {
       const name = btn.getAttribute('data-cp');
       // Toggle: se já está selecionado, limpa
@@ -1223,10 +1376,26 @@ function renderCounterpartyPanel() {
       } else {
         filterCounterparty.value = name;
       }
+      updateCounterpartyClearBtn();
       state.currentPage = 1;
       applyFilters();
     });
   });
+}
+
+/**
+ * Atualiza a visibilidade do botão eraser do filtro Conta Destino/Origem.
+ * O CSS mostra o botão apenas quando o wrapper tem classe .has-value.
+ */
+function updateCounterpartyClearBtn() {
+  const wrapper = document.getElementById('filter-counterparty-wrapper');
+  const input = document.getElementById('filter-counterparty');
+  if (!wrapper || !input) return;
+  if (input.value.trim().length > 0) {
+    wrapper.classList.add('has-value');
+  } else {
+    wrapper.classList.remove('has-value');
+  }
 }
 
 /**
@@ -1357,7 +1526,10 @@ function applyFilters() {
     });
   }
 
-  // Filtro por conta destino/origem (contraparte) - também com busca combinada
+  // Filtro por conta destino/origem (contraparte) - também com busca combinada.
+  // Inclui movementKey no haystack para que a seleção de um card PIX
+  // consolidado (que usa apenas o nome normalizado) case corretamente
+  // com todas as transações PIX daquele nome.
   const cpRaw = filterCounterparty.value.trim();
   if (cpRaw) {
     const tokens = parseSearchQuery(cpRaw);
@@ -1365,7 +1537,9 @@ function applyFilters() {
       const haystack = normalizeText(
         `${t.counterparty || ''} ${t.counterpartyName || ''} ${
           t.counterpartyAccount || ''
-        } ${t.counterpartyBank || ''} ${t.counterpartyBranch || ''}`
+        } ${t.counterpartyBank || ''} ${t.counterpartyBranch || ''} ${
+          t.movementKey || ''
+        }`
       );
       return tokens.every((tok) => {
         const needle = normalizeText(tok.value);
@@ -2410,7 +2584,7 @@ function doExportPDF() {
   // ==========================================================================
   // Headers e rows com colunas de estorno
   const head = [[
-    'Data/Hora', 'Tipo', 'Descrição', 'Contraparte',
+    'Data/Hora', 'Tipo', 'Descrição', 'Conta Destino/Origem',
     'Motivo Estorno', 'Destinatário', 'FITID Orig.',
     'TxId', 'Valor', 'Saldo Antes', 'Saldo Após'
   ]];
@@ -2608,23 +2782,42 @@ function doExportPDF() {
  */
 function setTheme(theme) {
   const isDark = theme === 'dark';
+  const root = document.documentElement;
+
   // Aplica a classe .dark no elemento raiz — Tailwind foi configurado com darkMode:'class'
-  // Uso explícito de add/remove (em vez de toggle) para garantir consistência
+  // Uso explícito de add/remove (em vez de toggle) para garantir consistência.
   if (isDark) {
-    document.documentElement.classList.add('dark');
+    root.classList.add('dark');
+    root.setAttribute('data-theme', 'dark');
+    root.style.colorScheme = 'dark';
   } else {
-    document.documentElement.classList.remove('dark');
+    root.classList.remove('dark');
+    root.setAttribute('data-theme', 'light');
+    root.style.colorScheme = 'light';
   }
+
   try {
     localStorage.setItem('theme', theme);
   } catch (e) {
     console.warn('localStorage não disponível:', e);
   }
+
   const icon = document.getElementById('theme-icon');
   if (icon) {
     // No modo escuro mostra o sol (para voltar ao claro); no claro mostra a lua
     icon.className = isDark ? 'fas fa-sun' : 'fas fa-moon';
   }
+
+  // Tailwind Play CDN faz JIT: força um rescan garantindo que utilitários
+  // dark:* sejam regenerados após a mudança de classe.
+  try {
+    if (window.tailwind && typeof window.tailwind.refresh === 'function') {
+      window.tailwind.refresh();
+    }
+  } catch (e) {
+    // silencioso — o CSS fallback em style.css cobre a base visual
+  }
+
   // Se o gráfico existe, re-renderiza para atualizar cores das grades/labels
   try {
     if (state.chart && state.filtered && state.filtered.length > 0) {

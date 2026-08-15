@@ -19,6 +19,18 @@
 - Detecção automática de encoding ISO-8859-1 (padrão dos bancos brasileiros)
 - Suporte a OFX SGML (v1.x) e XML (v2.x)
 
+### 📅 Seletor de Data/Hora Melhorado
+- Inputs `datetime-local` com **estilo visual próprio** (`.filter-datetime`) — bordas suaves, ícone de calendário maior, hover/focus animados
+- Ícone do picker (`::-webkit-calendar-picker-indicator`) ampliado e destacado
+- Ícones semânticos ao lado dos rótulos (📆 data inicial, ✅ data final)
+- Funciona em modo claro E escuro com contraste otimizado
+
+### 🧽 Botão Borracha em "Conta Destino/Origem"
+- Botão pequeno de borracha (🧹) dentro do input de filtro de conta destino/origem
+- Aparece **apenas quando há valor** preenchido (não polui a UI vazia)
+- Clique único zera a seleção e reaplica os filtros automaticamente
+- Devolve o foco ao input para permitir nova digitação imediata
+
 ### 🌓 Tema Claro / Escuro
 - Alternância entre modo claro e escuro pelo botão no cabeçalho (ícone lua/sol)
 - Preferência salva em `localStorage` e restaurada sem "flash" ao recarregar
@@ -74,16 +86,32 @@ Ideal para focar na tabela em telas menores ou ocultar temporariamente informaç
 - Em telas pequenas a tabela vira **cards** com data, tipo, descrição, contraparte e valor
 - Cabeçalho, filtros e painéis todos com espaçamento otimizado para toque
 
-### 👥 Painel de Contrapartes com Contagem de Estornos
-Além da contagem por tipo (crédito/débito), o painel de Contrapartes agora mostra:
-- **Em todos os modos**: badge amarelo com número de estornos por contraparte + valor total de estornos
-- Ícone de "undo" (↺) ao lado do nome quando a contraparte tem estornos associados
+### 👥 Painel de Movimentos (antigas "Contrapartes")
+Painel dedicado exibindo cards agrupados por destinatário/origem, com layout **translúcido colorido**:
+- 🟢 **Verde translúcido** — o movimento contém **apenas créditos** (entradas)
+- 🔴 **Vermelho translúcido** — o movimento contém **apenas débitos** (saídas)
+- ⚪ **Neutro** — movimentos mistos (créditos + débitos combinados)
+- 🔵 **Contorno azul** — card atualmente selecionado como filtro
+
+Cada card mostra: nome do movimento, contagem de transações, total de créditos/débitos, badge de estornos e **ticket médio** (ou saldo líquido nos mistos).
+
+### 🔀 Consolidação PIX por Nome
+Transações **PIX** são agrupadas por **nome do destinatário** (não pelo identificador único da transação):
+- Antes: cada PIX com EndToEndId diferente gerava um card separado (fragmentação)
+- Agora: várias transferências PIX para "JOÃO SILVA" aparecem em **um único card consolidado**
+- **Transações não-PIX** (TED, DOC, boleto) continuam preservando o rótulo completo (nome + banco/agência/conta), já que a conta bancária ali é relevante
+
+### 🔄 Estornos Sempre no Card de Crédito
+Estornos são **sempre movimentos de entrada de dinheiro** (mesmo quando o OFX os marca como débito):
+- **Nunca** contam no total/quantidade de débitos de um card
+- Sempre são somados no total de créditos e no total de estornos
+- Isso corrige a inconsistência de mostrar um estorno como se fosse uma saída
 
 ### 🔁 Botão Exclusivo de Estorno (independente do filtro de débito)
-- Botão dedicado **"Somente Estornos"** no cabeçalho do painel de Contrapartes
+- Botão dedicado **"Somente Estornos"** no cabeçalho do painel de Movimentos
 - Aparece automaticamente apenas quando o arquivo contém pelo menos um estorno; badge âmbar mostra a quantidade
 - **Independente** do filtro de tipo (Créditos/Débitos): pode ser combinado com qualquer combinação de filtros
-- Quando ativo, o painel de contrapartes mostra apenas quem participou de estornos, e a tabela filtra somente essas transações
+- Quando ativo, o painel de movimentos mostra apenas quem participou de estornos, e a tabela filtra somente essas transações
 - Estilo visual próprio (âmbar) para não confundir com o filtro de estorno do dropdown
 
 ### 🔄 Filtro de Estorno / Devolução

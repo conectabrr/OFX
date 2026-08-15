@@ -3,6 +3,55 @@ body {
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
 }
 
+/* ============================================================
+   TRANSIÇÕES GLOBAIS DE TEMA
+   ============================================================ */
+html {
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+html,
+body,
+* {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-duration: 0.18s;
+  transition-timing-function: ease;
+}
+/* Evita transição em elementos que dependem de animação própria */
+*::before,
+*::after,
+.spinner,
+canvas,
+img,
+svg {
+  transition: none;
+}
+
+/* ============================================================
+   FALLBACK CSS DIRETO PARA DARK MODE
+   Garante que o modo escuro funcione mesmo se o Tailwind Play CDN
+   demorar a regenerar suas classes utilitárias.
+   Aplica cores em elementos-chave usando seletores diretos.
+   ============================================================ */
+
+/* Body & root */
+html.dark body {
+  background-color: #020617; /* slate-950 */
+  color: #e2e8f0;             /* slate-200 */
+}
+html:not(.dark) body {
+  background-color: #f1f5f9;  /* slate-100 */
+  color: #0f172a;             /* slate-900 */
+}
+
+/* Cores utilitárias com força para reforçar o Tailwind quando o CDN atrasa */
+html.dark {
+  color-scheme: dark;
+}
+html:not(.dark) {
+  color-scheme: light;
+}
+
+/* Drop zone */
 #drop-zone.dragover {
   background-color: #eff6ff;
   border-color: #2563eb;
@@ -89,12 +138,9 @@ body {
   background: #64748b;
 }
 
-/* Transições suaves de tema */
-html {
-  transition: background-color 0.2s ease;
-}
-
-/* Cards colapsáveis */
+/* ============================================================
+   CARDS COLAPSÁVEIS
+   ============================================================ */
 .collapsible-body {
   overflow: hidden;
   transition: max-height 0.25s ease, opacity 0.25s ease, margin 0.25s ease;
@@ -107,7 +153,9 @@ html {
   padding-bottom: 0;
 }
 
-/* Loading spinner */
+/* ============================================================
+   LOADING SPINNER
+   ============================================================ */
 .spinner {
   border: 3px solid #e5e7eb;
   border-top-color: #2563eb;
@@ -123,7 +171,9 @@ html {
   }
 }
 
-/* Prévia da tabela dentro do modal */
+/* ============================================================
+   PRÉVIA DA TABELA DENTRO DO MODAL
+   ============================================================ */
 #preview-body table {
   width: 100%;
   border-collapse: collapse;
@@ -185,7 +235,9 @@ html {
   }
 }
 
-/* Botão exclusivo de estorno ativo */
+/* ============================================================
+   BOTÃO EXCLUSIVO DE ESTORNO ATIVO
+   ============================================================ */
 #counterparty-reversal-toggle.active {
   background-color: #f59e0b !important;
   color: white !important;
@@ -199,4 +251,285 @@ html {
   background-color: #d97706 !important;
   color: white !important;
   border-color: #b45309 !important;
+}
+
+/* ============================================================
+   CARDS DE MOVIMENTOS (antigas "contrapartes")
+   Fundo translúcido colorido conforme dominância de fluxo.
+   ============================================================ */
+.movement-card {
+  position: relative;
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #ffffff;
+  color: #334155;
+  transition: transform 0.12s ease, box-shadow 0.15s ease,
+    background-color 0.18s ease, border-color 0.18s ease;
+  cursor: pointer;
+}
+.movement-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.15);
+}
+.dark .movement-card {
+  background: #1e293b;
+  border-color: #475569;
+  color: #cbd5e1;
+}
+.dark .movement-card:hover {
+  box-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.5);
+}
+
+/* Variantes: crédito puro (verde translúcido) */
+.movement-card.mv-credit {
+  background: rgba(34, 197, 94, 0.08); /* green-500/8 */
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.movement-card.mv-credit:hover {
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.55);
+}
+.dark .movement-card.mv-credit {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.4);
+  color: #d1fae5;
+}
+.dark .movement-card.mv-credit:hover {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(34, 197, 94, 0.65);
+}
+
+/* Variantes: débito puro (vermelho translúcido) */
+.movement-card.mv-debit {
+  background: rgba(239, 68, 68, 0.07); /* red-500/7 */
+  border-color: rgba(239, 68, 68, 0.32);
+}
+.movement-card.mv-debit:hover {
+  background: rgba(239, 68, 68, 0.13);
+  border-color: rgba(239, 68, 68, 0.55);
+}
+.dark .movement-card.mv-debit {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #fecaca;
+}
+.dark .movement-card.mv-debit:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.65);
+}
+
+/* Variantes: misto (crédito + débito) - neutro */
+.movement-card.mv-mixed {
+  background: rgba(148, 163, 184, 0.08); /* slate-400/8 */
+  border-color: rgba(148, 163, 184, 0.35);
+}
+.movement-card.mv-mixed:hover {
+  background: rgba(148, 163, 184, 0.15);
+}
+.dark .movement-card.mv-mixed {
+  background: rgba(148, 163, 184, 0.1);
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+/* Estado ativo (selecionado) */
+.movement-card.mv-active {
+  outline: 2px solid #2563eb;
+  outline-offset: -1px;
+  background: rgba(37, 99, 235, 0.12);
+  border-color: #2563eb;
+  color: #1e40af;
+  font-weight: 600;
+}
+.dark .movement-card.mv-active {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: #3b82f6;
+  color: #dbeafe;
+}
+
+.movement-card .mv-name {
+  font-weight: 600;
+  font-size: 12.5px;
+  line-height: 1.25;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+.movement-card .mv-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: #64748b;
+}
+.dark .movement-card .mv-meta {
+  color: #94a3b8;
+}
+.movement-card .mv-totals {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  font-size: 11px;
+  font-weight: 600;
+}
+.movement-card .mv-total-credit {
+  color: #16a34a;
+}
+.movement-card .mv-total-debit {
+  color: #dc2626;
+}
+.movement-card .mv-total-reversal {
+  color: #d97706;
+}
+.dark .movement-card .mv-total-credit {
+  color: #4ade80;
+}
+.dark .movement-card .mv-total-debit {
+  color: #f87171;
+}
+.dark .movement-card .mv-total-reversal {
+  color: #fbbf24;
+}
+.movement-card .mv-avg {
+  font-size: 10px;
+  color: #94a3b8;
+  font-weight: 500;
+  margin-top: 3px;
+}
+.dark .movement-card .mv-avg {
+  color: #64748b;
+}
+
+/* ============================================================
+   INPUTS DATETIME-LOCAL - MAIS BONITOS E MAIORES
+   ============================================================ */
+.filter-datetime {
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.55rem;
+  background-color: #ffffff;
+  color: #0f172a;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease,
+    background-color 0.15s ease;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+}
+.filter-datetime:hover {
+  border-color: #94a3b8;
+  background-color: #f8fafc;
+}
+.filter-datetime:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  background-color: #ffffff;
+}
+.dark .filter-datetime {
+  background-color: #1e293b;
+  border-color: #475569;
+  color: #f1f5f9;
+}
+.dark .filter-datetime:hover {
+  background-color: #334155;
+  border-color: #64748b;
+}
+.dark .filter-datetime:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+  background-color: #1e293b;
+}
+/* Ícone do picker maior e mais bonito */
+.filter-datetime::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  padding: 4px;
+  margin-left: 6px;
+  width: 22px;
+  height: 22px;
+  opacity: 0.65;
+  border-radius: 4px;
+  filter: none;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+.filter-datetime::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+  background-color: rgba(37, 99, 235, 0.1);
+}
+.dark .filter-datetime::-webkit-calendar-picker-indicator {
+  filter: invert(0.85) brightness(1.1);
+  opacity: 0.75;
+}
+.dark .filter-datetime::-webkit-calendar-picker-indicator:hover {
+  background-color: rgba(59, 130, 246, 0.2);
+  opacity: 1;
+}
+/* Aumenta ligeiramente os campos internos do input */
+.filter-datetime::-webkit-datetime-edit {
+  padding: 0;
+  font-size: 0.95rem;
+}
+.filter-datetime::-webkit-datetime-edit-fields-wrapper {
+  padding: 0;
+}
+.filter-datetime::-webkit-datetime-edit-text {
+  padding: 0 2px;
+  color: #64748b;
+}
+.dark .filter-datetime::-webkit-datetime-edit-text {
+  color: #94a3b8;
+}
+
+/* ============================================================
+   INPUT COUNTERPARTY COM BOTÃO BORRACHA
+   ============================================================ */
+.input-clearable-wrapper {
+  position: relative;
+  width: 100%;
+}
+.input-clearable-wrapper input {
+  padding-right: 2.25rem;
+}
+.input-clear-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: #94a3b8;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+.input-clear-btn:hover {
+  color: #dc2626;
+  background: rgba(239, 68, 68, 0.1);
+}
+.dark .input-clear-btn {
+  color: #64748b;
+}
+.dark .input-clear-btn:hover {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.15);
+}
+.input-clearable-wrapper.has-value .input-clear-btn {
+  display: inline-flex;
 }
