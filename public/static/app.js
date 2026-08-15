@@ -202,13 +202,23 @@ function parseOFX(content) {
     // Detalhes do estorno: destinatário original e motivo
     let reversalReason = '';
     let reversalRecipient = '';
+    // Referência à transação original: além do CORRECTFITID (padrão OFX),
+    // muitos bancos brasileiros (Nubank, Itaú) colocam esta referência como
+    // "Transação #NNNNN" no MEMO. Vamos capturar esse número também.
+    let originalTxRef = '';
     if (isReversal) {
       reversalReason = detectReversalReason(memo, name, correctFitId);
-      // Destinatário original = a pessoa/empresa a quem a transação corrigida
-      // foi enviada. Para estornos, o counterpartyName atual já é o destinatário
-      // original (o dinheiro está voltando dele). Se não temos, tentamos
-      // extrair do MEMO padrões brasileiros.
+      // Destinatário original = a pessoa/empresa envolvida na transação
+      // original. Para estornos (crédito voltando): X me devolveu → X é a
+      // pessoa que originalmente recebeu meu envio. Para devoluções (débito
+      // saindo): eu devolvo para X → X é a pessoa que originalmente me enviou.
+      //
+      // Em ambos os casos, a CONTRAPARTE atual do estorno (counterparty.name)
+      // é a pessoa envolvida — porque em PIX o nome no MEMO SEMPRE aparece.
       reversalRecipient = counterparty.name || extractReversalRecipient(memo, name);
+      // Extrai "Transação #NNNNN" do MEMO (fallback para CORRECTFITID)
+      const txRefMatch = `${memo} ${name}`.match(/Transa[cç][aã]o\s*#\s*(\d{4,})/i);
+      if (txRefMatch) originalTxRef = txRefMatch[1];
     }
 
     transactions.push({
@@ -235,6 +245,7 @@ function parseOFX(content) {
       isBoleto,                                // boolean: é pagamento de boleto/título?
       boletoReason,                            // ex: "Boleto", "Título", "DDA", "Ticket"
       isPix,                                   // boolean: é transação PIX?
+      originalTxRef,                           // "Transação #NNNNN" extraído do MEMO
       // Chave de agrupamento normalizada para o painel de "Movimentos".
       // PIX: usa APENAS o nome normalizado (sem identificadores únicos),
       // caso contrário mesmo destinatário aparece em cards separados por txId.
@@ -243,22 +254,61 @@ function parseOFX(content) {
     });
   }
 
-  // Pós-processamento: para cada estorno com correctFitId, tenta resolver o
-  // nome do destinatário original olhando a transação corrigida.
+  // Pós-processamento: para cada estorno, tenta resolver a transação original
+  // e o nome do destinatário/remetente original.
+  //
+  // Estratégia em cascata:
+  //  1. CORRECTFITID (padrão OFX) → lookup direto pelo id
+  //  2. originalTxRef ("Transação #NNNNN" do MEMO) → busca em MEMO/FITID de outras trans.
+  //  3. Fallback: já preenchido em reversalRecipient (nome da contraparte atual)
+  //
+  // A transação original identificada:
+  //  - Estorno de CRÉDITO (recebeu de volta): a original foi um débito que ele enviou
+  //  - Devolução por DÉBITO (está devolvendo): a original foi um crédito que ele recebeu
   const byId = new Map(transactions.map((t) => [t.id, t]));
+  // Índice reverso: número de transação (extraído do MEMO) → transação
+  // Bancos como Nubank/Itaú colocam "Transação #NNNNN" em quase todos os MEMOs.
+  const byTxRef = new Map();
   transactions.forEach((t) => {
-    if (t.isReversal && t.correctFitId) {
-      const original = byId.get(t.correctFitId);
-      if (original) {
-        // Se o estorno ainda não tem destinatário, herda do original
-        if (!t.reversalRecipient) {
-          t.reversalRecipient = original.counterpartyName || original.counterparty || '';
-        }
-        // Guarda referências úteis
-        t.reversalOriginalDate = original.date;
-        t.reversalOriginalAmount = original.amount;
-        t.reversalOriginalDescription = original.description;
+    const memoMatch = (t.memo || '').match(/Transa[cç][aã]o\s*#\s*(\d{4,})/i);
+    if (memoMatch) {
+      byTxRef.set(memoMatch[1], t);
+    }
+  });
+
+  transactions.forEach((t) => {
+    if (!t.isReversal) return;
+    let original = null;
+    // 1. Lookup por CORRECTFITID
+    if (t.correctFitId) {
+      original = byId.get(t.correctFitId);
+    }
+    // 2. Fallback: lookup por número de transação extraído do MEMO
+    if (!original && t.originalTxRef) {
+      original = byTxRef.get(t.originalTxRef);
+    }
+
+    if (original) {
+      // Se o estorno ainda não tem destinatário, herda do original.
+      // O nome no original é sempre a "outra ponta" (a mesma pessoa que
+      // agora aparece invertida no estorno). Mas se por acaso o nome atual
+      // veio vazio, a contraparte da original resolve.
+      if (!t.reversalRecipient) {
+        t.reversalRecipient =
+          original.counterpartyName || original.counterparty || '';
       }
+      // Guarda referências úteis
+      t.reversalOriginalDate = original.date;
+      t.reversalOriginalAmount = original.amount;
+      t.reversalOriginalDescription = original.description;
+      t.reversalOriginalId = original.id;
+    }
+
+    // Última garantia: se ainda não temos reversalRecipient, usa a
+    // contraparte atual — porque no PIX brasileiro a contraparte do
+    // estorno JÁ É a pessoa envolvida na original.
+    if (!t.reversalRecipient) {
+      t.reversalRecipient = t.counterpartyName || t.counterparty || '';
     }
   });
 
@@ -1155,10 +1205,13 @@ function setupFilters() {
  *
  * Regras importantes:
  *  - Chave de agrupamento: usa t.movementKey (consolida PIX por nome).
- *  - Estornos NÃO contam no débito, apenas no crédito (semanticamente
- *    um estorno é sempre uma entrada de dinheiro, independente do
- *    campo type do OFX). O total do estorno também é rastreado
- *    separadamente para o badge "Somente estornos".
+ *  - Estornos são contados no bucket ORIGINAL do OFX (crédito ou débito)
+ *    para PRESERVAR os totais reais. Estorno-crédito (Recebido de X)
+ *    entra em totalCredit; devolução-débito (Enviado para X) entra em
+ *    totalDebit. Adicionalmente, reversalCount/totalReversal são
+ *    rastreados como métrica independente para o badge de estornos.
+ *  - reversalRecipients: coleta nomes de "quem receberia a transação
+ *    original" (útil para identificar rapidamente no card).
  *  - Cards herdam a "cor dominante": só créditos = verde, só débitos =
  *    vermelho, mistos = neutro.
  */
@@ -1175,29 +1228,43 @@ function populateCounterpartyList() {
         creditCount: 0,
         debitCount: 0,
         reversalCount: 0,        // total de estornos com esse movimento
+        reversalCreditCount: 0,  // estornos que são créditos (recebidos)
+        reversalDebitCount: 0,   // estornos que são débitos (devolvidos)
         totalCredit: 0,
         totalDebit: 0,
         totalReversal: 0,        // valor absoluto acumulado dos estornos
+        reversalRecipients: new Set(), // quem receberia a transação original
         displayName: t.counterpartyName || t.counterparty || key,
       });
     }
     const entry = nameCount.get(key);
     entry.count++;
 
-    // ★ Regra do usuário: "estorno sempre será um crédito, então não
-    // deverá aparecer no card débito". Portanto: se é estorno, contamos
-    // no crédito INDEPENDENTE do sinal do OFX.
-    if (t.isReversal) {
-      entry.reversalCount++;
-      entry.totalReversal += t.absAmount;
-      entry.creditCount++;
-      entry.totalCredit += t.absAmount;
-    } else if (t.type === 'credit') {
+    // Preserva o tipo original do OFX nos totais (não reclassifica).
+    if (t.type === 'credit') {
       entry.creditCount++;
       entry.totalCredit += t.amount;
     } else {
       entry.debitCount++;
       entry.totalDebit += t.absAmount;
+    }
+
+    // Estornos são rastreados adicionalmente (métrica paralela).
+    if (t.isReversal) {
+      entry.reversalCount++;
+      entry.totalReversal += t.absAmount;
+      if (t.type === 'credit') {
+        entry.reversalCreditCount++;
+      } else {
+        entry.reversalDebitCount++;
+      }
+      // Coleta o destinatário/contraparte da transação original.
+      // Prioriza reversalRecipient (do lookup por Transação #NNNNN);
+      // ignora se for igual ao próprio displayName (evitar redundância).
+      const recipient = (t.reversalRecipient || '').trim();
+      if (recipient && recipient.toLowerCase() !== entry.displayName.toLowerCase()) {
+        entry.reversalRecipients.add(recipient);
+      }
     }
   });
   const sorted = [...nameCount.entries()].sort((a, b) => b[1].count - a[1].count);
@@ -1325,11 +1392,36 @@ function renderCounterpartyPanel() {
           ? data.debitCount
           : data.count;
 
-      // Badge de estorno (independente do tipo)
-      const reversalBadge =
-        data.reversalCount > 0
-          ? ` <span class="badge badge-reversal align-middle" title="${data.reversalCount} estorno(s)"><i class="fas fa-undo mr-0.5"></i>${data.reversalCount}</span>`
-          : '';
+      // Badge de estorno (independente do tipo) — inclui breakdown crédito/débito
+      let reversalBadge = '';
+      if (data.reversalCount > 0) {
+        const parts = [];
+        if (data.reversalCreditCount > 0) parts.push(`${data.reversalCreditCount} crédito(s)`);
+        if (data.reversalDebitCount > 0) parts.push(`${data.reversalDebitCount} débito(s)`);
+        const badgeTitle = `${data.reversalCount} estorno(s): ${parts.join(', ')}`;
+        reversalBadge = ` <span class="badge badge-reversal align-middle" title="${escapeHtml(badgeTitle)}"><i class="fas fa-undo mr-0.5"></i>${data.reversalCount}</span>`;
+      }
+
+      // Linha de "quem receberia/recebeu a transação original"
+      // (só aparece se houver reversalRecipients coletados via lookup por
+      // CORRECTFITID ou por Transação #NNNNN no MEMO). Ajuda a identificar
+      // rapidamente PARA QUEM foi a devolução ou DE QUEM veio o estorno.
+      let reversalRecipientsLine = '';
+      if (data.reversalCount > 0 && data.reversalRecipients && data.reversalRecipients.size > 0) {
+        const list = [...data.reversalRecipients];
+        const shown = list.slice(0, 2).map(escapeHtml).join(', ');
+        const extra = list.length > 2 ? ` <span class="opacity-60">+${list.length - 2}</span>` : '';
+        // Rótulo: "Estorno de:" se o card só tem estorno-crédito (recebeu),
+        // "Devolvido para:" se só tem estorno-débito, "Envolvidos:" se misto.
+        let label = 'Envolvidos';
+        if (data.reversalCreditCount > 0 && data.reversalDebitCount === 0) {
+          label = 'Estorno de';
+        } else if (data.reversalDebitCount > 0 && data.reversalCreditCount === 0) {
+          label = 'Devolvido para';
+        }
+        const fullList = list.map(escapeHtml).join(', ');
+        reversalRecipientsLine = `<div class="mv-reversal-recipients" title="${escapeHtml(fullList)}"><i class="fas fa-exchange-alt mr-1"></i>${label}: ${shown}${extra}</div>`;
+      }
 
       // === Ticket médio (info a mais, minimalista) ===
       // Prioriza a direção dominante. Se PIX-only: mostra ticket médio dos créditos ou débitos.
@@ -1363,6 +1455,7 @@ function renderCounterpartyPanel() {
             <div class="mv-totals">${totals.join('')}</div>
           </div>
           ${avgLine}
+          ${reversalRecipientsLine}
         </button>`;
     })
     .join('');
