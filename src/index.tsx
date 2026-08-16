@@ -494,7 +494,7 @@ app.get('/', (c) => {
                     <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Descrição</th>
                     <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Conta Destino/Origem</th>
                     <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="Nome do destinatário original da transação estornada/devolvida">Destinatário Estorno</th>
-                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="EndToEndId (REFNUM do OFX, é o que aparece no comprovante BACEN) e TxId (FITID do OFX)">TxId / EndToEnd</th>
+                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="TxId = ID da transação (aparece no comprovante do banco). EndToEnd = EndToEndId BACEN (só PIX).">TxId / EndToEnd</th>
                     <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Valor</th>
                     <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Antes</th>
                     <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Após</th>

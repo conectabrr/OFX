@@ -211,16 +211,24 @@ function parseOFX(content) {
     // Para "Recebido de X - ESTORNO: ... #NNNNN", o destinatário original
     // está na transação #NNNNN, NÃO em X.
     let reversalRecipient = '';
-    // Referência à transação original: além do CORRECTFITID (padrão OFX),
-    // muitos bancos brasileiros (Nubank, Itaú) colocam esta referência como
-    // "Transação #NNNNN" no MEMO. Vamos capturar esse número também.
-    let originalTxRef = '';
+    // Referência à transação: bancos brasileiros (Nubank, Itaú) colocam a
+    // referência da transação como "Transação #NNNNN" no MEMO.
+    // ESTE número É o que aparece no COMPROVANTE do app (Nubank mostra como
+    // "ID da transação", Itaú como "Nº da transação"). É extraído de TODAS
+    // as transações que tiverem esse padrão, não só estornos, porque é o
+    // identificador que o usuário vê no comprovante.
+    //
+    // Para estornos, esse mesmo número também funciona como referência
+    // para casar o estorno com o débito/crédito original (ambos carregam
+    // o mesmo #NNNNN).
+    let txRefFromMemo = '';
+    const txRefMatch = `${memo} ${name}`.match(/Transa[cç][aã]o\s*#\s*(\d{4,})/i);
+    if (txRefMatch) txRefFromMemo = txRefMatch[1];
     if (isReversal) {
       reversalReason = detectReversalReason(memo, name, correctFitId);
-      // Extrai "Transação #NNNNN" do MEMO (fallback para CORRECTFITID)
-      const txRefMatch = `${memo} ${name}`.match(/Transa[cç][aã]o\s*#\s*(\d{4,})/i);
-      if (txRefMatch) originalTxRef = txRefMatch[1];
     }
+    // Compat com o restante do código (byTxRef lookup):
+    const originalTxRef = txRefFromMemo;
 
     transactions.push({
       id: fitId || `trn-${idx++}`,
@@ -247,17 +255,20 @@ function parseOFX(content) {
       boletoReason,                            // ex: "Boleto", "Título", "DDA", "Ticket"
       isPix,                                   // boolean: é transação PIX?
       // Identificadores da transação (o que aparece no comprovante):
-      //  - fitId  : TxId interno do OFX/banco (sempre existe)
-      //  - refNum : EndToEndId do PIX quando disponível (é o identificador
-      //             oficial BACEN que consta no comprovante; ex: "CIELO202608..."
-      //             ou "E{ISPB}...", "SE00...", "mpqrinter...").
-      // O "Transação #NNNNN" que aparecia no MEMO é uma referência INTERNA
-      // do Nubank/Itaú e NÃO é o EndToEnd — foi removido da UI.
-      fitId,                                   // TxId do OFX
-      refNum,                                  // EndToEndId do PIX (quando existir)
-      // originalTxRef ainda é útil INTERNAMENTE para resolver o
-      // destinatário do estorno (bancos usam essa referência para casar
-      // estorno⇄original), mas NÃO é exibido como identificador da transação.
+      //  - txId    : "Transação #NNNNN" do MEMO — É o ID que o app do banco
+      //              (Nubank, Itaú) mostra ao usuário no comprovante como
+      //              "ID da transação" / "Nº da transação". Fallback: FITID.
+      //  - endToEnd: REFNUM do OFX — identificador BACEN do PIX quando
+      //              existe (ex: "CIELO202608...", "SE00...", "E{ISPB}...",
+      //              "mpqrinter..."). Aparece no comprovante como
+      //              "ID de ponta a ponta" / "EndToEndId".
+      // Guardamos também fitId cru para exportações/debug.
+      txId: txRefFromMemo || fitId,            // ID mostrado no comprovante
+      endToEnd: refNum,                        // EndToEndId BACEN (só PIX)
+      fitId,                                   // FITID do OFX (dedup/export)
+      refNum,                                  // REFNUM cru (compat)
+      // originalTxRef = mesmo valor de txRefFromMemo, usado para casar
+      // estorno⇄transação original via byTxRef lookup.
       originalTxRef,
       // Chave de agrupamento normalizada para o painel de "Movimentos".
       // PIX: usa APENAS o nome normalizado (sem identificadores únicos),
@@ -1782,21 +1793,20 @@ function renderTable() {
         ? `<span class="text-amber-800 dark:text-amber-200 font-medium" title="Contraparte da transação original">${escapeHtml(t.reversalRecipient)}</span>`
         : (t.isReversal ? '<span class="text-gray-400 dark:text-slate-500 italic text-xs">Não identificado</span>' : dash);
 
-      // Coluna TxId / EndToEnd: mostra os DOIS identificadores oficiais
-      // do OFX/PIX, exatamente como aparecem no comprovante bancário:
-      //  - REFNUM (EndToEndId do PIX, quando existir): identificador
-      //    BACEN — ex: "CIELO202608...", "SE000...", "E{ISPB}...".
-      //  - FITID (TxId interno do OFX/banco): sempre presente.
-      // Não usamos mais o "#NNNNN" do MEMO — é referência interna do
-      // Nubank e não bate com o comprovante.
+      // Coluna TxId / EndToEnd — exatamente o que aparece no comprovante:
+      //  - TxId    = "Transação #NNNNN" do MEMO (o ID que o Nubank/Itaú
+      //              mostra no comprovante como "ID da transação").
+      //              Fallback: FITID quando não há #NNNNN.
+      //  - EndToEnd = REFNUM do OFX (só quando é PIX com E2E) — o
+      //              identificador BACEN "ID de ponta a ponta".
       let txIdCell = dash;
-      if (t.refNum || t.fitId) {
+      if (t.txId || t.endToEnd) {
         const lines = [];
-        if (t.refNum) {
-          lines.push(`<div class="text-[11px] text-blue-300 font-mono" title="EndToEndId do PIX (comprovante BACEN)"><span class="text-[9px] text-blue-400/70 font-sans uppercase mr-1">E2E</span>${escapeHtml(t.refNum)}</div>`);
+        if (t.txId) {
+          lines.push(`<div class="text-[12px] text-slate-200 font-mono" title="ID da transação (aparece no comprovante do banco)"><span class="text-[9px] text-slate-500 font-sans uppercase mr-1">TxId</span>${escapeHtml(t.txId)}</div>`);
         }
-        if (t.fitId) {
-          lines.push(`<div class="text-[11px] text-slate-400 font-mono" title="TxId (FITID do OFX)"><span class="text-[9px] text-slate-500 font-sans uppercase mr-1">TxId</span>${escapeHtml(t.fitId)}</div>`);
+        if (t.endToEnd) {
+          lines.push(`<div class="text-[11px] text-blue-300 font-mono break-all" title="EndToEndId — identificador BACEN do PIX"><span class="text-[9px] text-blue-400/70 font-sans uppercase mr-1">E2E</span>${escapeHtml(t.endToEnd)}</div>`);
         }
         txIdCell = `<div class="space-y-0.5">${lines.join('')}</div>`;
       }
@@ -2212,8 +2222,8 @@ const EXPORT_COLUMNS = [
   'Destinatário Estorno',
   'Boleto',
   'Tipo Boleto',
+  'TxId',
   'EndToEndId (PIX)',
-  'TxId (FITID)',
   'Valor',
   'Saldo Antes',
   'Saldo Após',
@@ -2234,8 +2244,8 @@ function buildExportRow(t) {
     t.isReversal ? (t.reversalRecipient || '') : '',
     t.isBoleto ? 'Sim' : '',
     t.isBoleto ? (t.boletoReason || 'Boleto') : '',
-    t.refNum || '',
-    t.fitId || t.id || '',
+    t.txId || t.fitId || t.id || '',
+    t.endToEnd || '',
     (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount),
     t.balanceBefore != null ? formatCurrency(t.balanceBefore) : '',
     t.balanceAfter != null ? formatCurrency(t.balanceAfter) : '',
@@ -2435,8 +2445,8 @@ function doExportCSV() {
     t.isReversal ? (t.reversalRecipient || '').replace(/"/g, '""') : '',
     t.isBoleto ? 'Sim' : '',
     t.isBoleto ? (t.boletoReason || 'Boleto') : '',
-    t.refNum || '',
-    t.fitId || t.id || '',
+    t.txId || t.fitId || t.id || '',
+    t.endToEnd || '',
     t.amount.toFixed(2).replace('.', ','),
     t.balanceBefore != null ? t.balanceBefore.toFixed(2).replace('.', ',') : '',
     t.balanceAfter != null ? t.balanceAfter.toFixed(2).replace('.', ',') : '',
@@ -2696,13 +2706,14 @@ function doExportPDF() {
   // ==========================================================================
   // TABELA DE TRANSAÇÕES
   // ==========================================================================
-  // Headers e rows: identificadores agora em DUAS colunas separadas —
-  // EndToEndId (REFNUM do OFX, é o do comprovante BACEN) e TxId (FITID).
-  // "#NNNNN" do MEMO NÃO é exibido (é referência interna do banco).
+  // Headers e rows: identificadores em DUAS colunas —
+  //  - TxId    : ID que aparece no comprovante ("Transação #NNNNN" do MEMO
+  //              ou FITID como fallback).
+  //  - EndToEnd: EndToEndId BACEN (REFNUM do OFX), só quando é PIX com E2E.
   const head = [[
     'Data/Hora', 'Tipo', 'Descrição', 'Conta Destino/Origem',
     'Destinatário Estorno',
-    'EndToEndId (PIX)', 'TxId', 'Valor', 'Saldo Antes', 'Saldo Após'
+    'TxId', 'EndToEndId (PIX)', 'Valor', 'Saldo Antes', 'Saldo Após'
   ]];
   const rows = source.map((t) => [
     formatDateTime(t.date),
@@ -2710,8 +2721,8 @@ function doExportPDF() {
     t.description || '',
     t.counterparty || '-',
     t.isReversal ? (t.reversalRecipient || '') : '',
-    t.refNum || '-',
-    t.fitId || t.id || '-',
+    t.txId || t.fitId || t.id || '-',
+    t.endToEnd || '-',
     (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount),
     t.balanceBefore != null ? formatCurrency(t.balanceBefore) : '-',
     t.balanceAfter != null ? formatCurrency(t.balanceAfter) : '-',
@@ -2746,8 +2757,8 @@ function doExportPDF() {
       2: { cellWidth: 'auto' },                             // Descrição
       3: { cellWidth: 28 },                                 // Contraparte
       4: { cellWidth: 22 },                                 // Destinatário Estorno
-      5: { cellWidth: 28, font: 'courier', fontSize: 5.5 }, // EndToEndId
-      6: { cellWidth: 16, font: 'courier', fontSize: 5.5 }, // TxId
+      5: { cellWidth: 18, font: 'courier', fontSize: 5.5 }, // TxId
+      6: { cellWidth: 28, font: 'courier', fontSize: 5.5 }, // EndToEndId
       7: { cellWidth: 20, halign: 'right', fontStyle: 'bold' }, // Valor
       8: { cellWidth: 18, halign: 'right' },                // Saldo Antes
       9: { cellWidth: 20, halign: 'right', fontStyle: 'bold' }, // Saldo Após
