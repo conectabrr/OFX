@@ -1638,32 +1638,31 @@ function bindFilterListeners() {
     freeText: true, // também permite texto livre
   });
 
-  // Filtro estorno
-  const filterReversal = document.getElementById('filter-reversal');
-  if (filterReversal) {
-    filterReversal.addEventListener('change', () => {
+  // ============================================================
+  // FILTROS BOOLEANOS EXCLUSIVOS: Estorno / Boleto / Devolução PIX
+  // ============================================================
+  // A pedido do usuário: quando o usuário ativa um deles (valor != 'all'),
+  // os OUTROS DOIS devem voltar automaticamente para 'todos'. São mutuamente
+  // exclusivos porque combiná-los quase sempre esconde resultados úteis
+  // (ex.: "Somente boletos" + "Somente estornos" = vazio, pois boleto não
+  // é estorno). Assim o usuário sempre vê o filtro que acabou de ativar.
+  const BOOLEAN_FILTER_IDS = ['filter-reversal', 'filter-boleto', 'filter-devolucao'];
+  BOOLEAN_FILTER_IDS.forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      // Se acabou de ativar (valor != 'all'), zera os outros dois
+      if (el.value !== 'all') {
+        BOOLEAN_FILTER_IDS.forEach((otherId) => {
+          if (otherId === id) return;
+          const other = document.getElementById(otherId);
+          if (other && other.value !== 'all') other.value = 'all';
+        });
+      }
       state.currentPage = 1;
       applyFilters();
     });
-  }
-
-  // Filtro boleto
-  const filterBoleto = document.getElementById('filter-boleto');
-  if (filterBoleto) {
-    filterBoleto.addEventListener('change', () => {
-      state.currentPage = 1;
-      applyFilters();
-    });
-  }
-
-  // Filtro devolução PIX
-  const filterDevolucao = document.getElementById('filter-devolucao');
-  if (filterDevolucao) {
-    filterDevolucao.addEventListener('change', () => {
-      state.currentPage = 1;
-      applyFilters();
-    });
-  }
+  });
 
   // Mudança de tamanho de página
   pageSizeSelect.addEventListener('change', () => {
@@ -2117,6 +2116,12 @@ function initMultiselectFilter(key, config) {
   input.addEventListener('input', () => {
     rt.highlighted = -1;
     renderMultiselectSuggestions(key);
+    // Ao digitar no filtro de descrição/contraparte, zera os booleanos
+    // exclusivos (só se o usuário DIGITOU algo — input vazio significa
+    // limpar o filtro, não aplicar um novo critério).
+    if (input.value.trim().length > 0) {
+      resetExclusiveBooleanFilters();
+    }
     // Live search: applyFilters já usa input.value como pill temporário
     state.currentPage = 1;
     applyFilters();
@@ -2204,6 +2209,30 @@ function getVisibleSuggestions(key) {
 }
 
 /**
+ * Reseta os filtros booleanos exclusivos (estorno/boleto/devolução)
+ * para 'todos'. Chamado sempre que o usuário mexe no filtro de descrição
+ * ou de contraparte — a pedido do usuário:
+ *   "quando selecionar os filtros estorno, boleto e devolução, um ou
+ *    outro deve voltar ao seu status de todos, pois se não, não aparece
+ *    aquele filtro, bem como quando filtramos Buscar Descrição, estes
+ *    filtros de estorno, devolução e boleto, devem voltar para o status
+ *    todos"
+ * Retorna true se ALGUM foi resetado (para eventual feedback visual).
+ */
+function resetExclusiveBooleanFilters() {
+  const ids = ['filter-reversal', 'filter-boleto', 'filter-devolucao'];
+  let changed = false;
+  ids.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el && el.value !== 'all') {
+      el.value = 'all';
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+/**
  * Adiciona uma pill ao filtro. Se já existe uma pill com o mesmo valor
  * (case-insensitive), apenas alterna include/exclude.
  */
@@ -2220,6 +2249,8 @@ function addPill(key, value, exclude = false) {
   } else {
     pills.push({ value: clean, exclude });
   }
+  // Ao aplicar filtro de descrição/contraparte, zera os booleanos exclusivos
+  resetExclusiveBooleanFilters();
   // Limpa input e re-renderiza tudo
   const input = document.getElementById(multiselectRuntime[key].config.inputId);
   if (input) input.value = '';
@@ -2233,6 +2264,8 @@ function addPill(key, value, exclude = false) {
 /** Remove pill pelo índice */
 function removePill(key, index) {
   state.filterPills[key].splice(index, 1);
+  // Nota: NÃO resetamos booleanos ao REMOVER — só ao ADICIONAR/toggle.
+  // Remover é uma redução do filtro atual, não um novo critério.
   renderFilterPills(key);
   state.currentPage = 1;
   applyFilters();
@@ -2243,6 +2276,8 @@ function togglePill(key, index) {
   const pill = state.filterPills[key][index];
   if (!pill) return;
   pill.exclude = !pill.exclude;
+  // Toggle é uma mudança semântica → zera booleanos
+  resetExclusiveBooleanFilters();
   renderFilterPills(key);
   state.currentPage = 1;
   applyFilters();
@@ -2678,6 +2713,14 @@ function applyFilters() {
   // Também aceita o texto ainda não confirmado (input.value) como token
   // temporário para busca "ao vivo" enquanto o usuário digita.
   // ============================================================
+  // SEMÂNTICA (a pedido do usuário): pills INCLUDE são OR entre si.
+  //   "quando seleciono mais de um, não é para não aparecer o outro,
+  //    deve aparecer os dois selecionados"
+  // Antes era AND: 'pix' + 'boleto' resultava em vazio porque a mesma
+  // transação nunca é as duas coisas. Agora é OR: mostra transações
+  // que combinem com pix OU com boleto.
+  // Pills EXCLUDE continuam sendo AND-NOT (todas devem NÃO bater).
+  // Mesma regra do filtro Conta Destino/Origem, agora unificada.
   const searchPills = state.filterPills.search.slice();
   const searchLive = (filterSearch.value || '').trim();
   if (searchLive) searchPills.push({ value: searchLive, exclude: false });
@@ -2686,11 +2729,16 @@ function applyFilters() {
       const haystack = normalizeText(
         `${t.description || ''} ${t.memo || ''} ${t.name || ''} ${t.trnType || ''}`
       );
-      return searchPills.every((tok) => {
-        const needle = normalizeText(tok.value);
-        const found = haystack.includes(needle);
-        return tok.exclude ? !found : found;
-      });
+      const includePills = searchPills.filter((p) => !p.exclude);
+      const excludePills = searchPills.filter((p) =>  p.exclude);
+
+      const matchesInclude =
+        includePills.length === 0 ||
+        includePills.some((p) => haystack.includes(normalizeText(p.value)));
+      const matchesExclude = excludePills.every(
+        (p) => !haystack.includes(normalizeText(p.value))
+      );
+      return matchesInclude && matchesExclude;
     });
   }
 

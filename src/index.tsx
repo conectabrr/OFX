@@ -375,7 +375,7 @@ app.get('/', (c) => {
                   Buscar Descrição
                   <span
                     class="ml-1 text-blue-500 cursor-help"
-                    title="Digite e pressione Enter (ou selecione da lista) para adicionar. Cada pill é um termo — clique nela para alternar entre INCLUIR (verde) e EXCLUIR (vermelho). X remove."
+                    title="Digite e pressione Enter (ou selecione da lista) para adicionar. Múltiplos verdes = OR (mostra o que combina com QUALQUER um). Vermelhos = excluir (nunca aparecem). Clique na pill para alternar. X remove."
                   >
                     <i class="fas fa-question-circle"></i>
                   </span>
@@ -393,7 +393,7 @@ app.get('/', (c) => {
                   <div class="multiselect-suggestions" id="filter-search-suggestions"></div>
                 </div>
                 <p class="text-[10px] text-gray-500 dark:text-slate-400 mt-1 hidden sm:block">
-                  <span class="text-emerald-500 font-semibold">Verde = incluir</span> · <span class="text-rose-500 font-semibold">Vermelho = excluir</span> · Clique na pill para alternar
+                  <span class="text-emerald-500 font-semibold">Verde = incluir (OR)</span> · <span class="text-rose-500 font-semibold">Vermelho = excluir</span> · Clique na pill para alternar
                 </p>
               </div>
               <div>
