@@ -626,3 +626,222 @@ html:not(.dark) {
 .input-clearable-wrapper.has-value .input-clear-btn {
   display: inline-flex;
 }
+
+/* ============================================================
+   TABELA DE TRANSAÇÕES — GRID COMPLETO + STICKY HEADER
+   ============================================================
+   Requisitos do usuário:
+   - Linhas horizontais E verticais para facilitar visualização
+   - Cabeçalho fixo que acompanha o scroll da página
+   - Texto centralizado em todas as colunas
+*/
+.transactions-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+/* Bordas verticais entre colunas (grid vertical) */
+.transactions-table th,
+.transactions-table td {
+  border-right: 1px solid #e5e7eb;
+  vertical-align: middle;
+}
+.transactions-table th:last-child,
+.transactions-table td:last-child {
+  border-right: none;
+}
+.dark .transactions-table th,
+.dark .transactions-table td {
+  border-right-color: #334155;
+}
+
+/* Bordas horizontais entre linhas (grid horizontal) */
+.transactions-table tbody tr {
+  border-bottom: 1px solid #e5e7eb;
+}
+.dark .transactions-table tbody tr {
+  border-bottom-color: #334155;
+}
+.transactions-table tbody tr:last-child {
+  border-bottom: 2px solid #d1d5db;
+}
+.dark .transactions-table tbody tr:last-child {
+  border-bottom-color: #475569;
+}
+
+/* Sticky header — o cabeçalho da tabela acompanha o scroll VERTICAL
+   da PÁGINA (window). Como a rolagem é da janela e não do container
+   overflow, precisamos usar top:0 com position:sticky no <thead>. */
+.transactions-thead {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  /* Sombra sutil quando "grudado" no topo */
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+}
+.dark .transactions-thead {
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+}
+/* Reforça o fundo — muitos navegadores herdam transparente em sticky */
+.transactions-thead th {
+  background-color: #f9fafb;
+}
+.dark .transactions-thead th {
+  background-color: #0f172a;
+}
+
+/* Divide-y do Tailwind pode conflitar com nossa border-bottom.
+   Neutralizamos a borda que o Tailwind adiciona: */
+#transactions-tbody.divide-y > tr {
+  border-top: none;
+}
+
+/* ============================================================
+   INPUT DE DATA/HORA — DIGITÁVEL + ÍCONE CALENDÁRIO DENTRO
+   ============================================================
+   O usuário quer:
+   - Poder digitar a data manualmente (sem popup automático)
+   - Ícone de calendário DENTRO do bloco
+   - Clicar no ícone abre o picker
+*/
+.datetime-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+.datetime-input-wrapper .filter-datetime {
+  padding-right: 2.5rem; /* espaço para o ícone */
+}
+.datetime-cal-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  cursor: pointer;
+  border-radius: 0.4rem;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.datetime-cal-btn:hover {
+  background-color: rgba(37, 99, 235, 0.1);
+}
+.datetime-cal-btn:focus {
+  outline: none;
+  background-color: rgba(37, 99, 235, 0.15);
+}
+.dark .datetime-cal-btn {
+  color: #60a5fa;
+}
+.dark .datetime-cal-btn:hover {
+  background-color: rgba(59, 130, 246, 0.2);
+}
+
+/* ============================================================
+   BLOCOS ARRASTÁVEIS DO DASHBOARD (SortableJS)
+   ============================================================
+   Cada seção principal (Summary, Calc, Chart, Filters, Movimentos,
+   Transações) tem uma "alça" no topo para arrastar e reordenar.
+*/
+.draggable-block {
+  position: relative;
+}
+.block-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  margin-bottom: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+  cursor: grab;
+  user-select: none;
+  border-radius: 6px;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+.block-drag-handle:hover {
+  color: #64748b;
+  background-color: rgba(100, 116, 139, 0.08);
+}
+.dark .block-drag-handle {
+  color: #64748b;
+}
+.dark .block-drag-handle:hover {
+  color: #cbd5e1;
+  background-color: rgba(148, 163, 184, 0.12);
+}
+.block-drag-handle:active {
+  cursor: grabbing;
+}
+.block-drag-handle .fa-grip-vertical {
+  font-size: 12px;
+}
+.block-drag-label {
+  font-size: 10px;
+}
+
+/* Estado durante o arraste (SortableJS aplica .sortable-ghost) */
+.sortable-ghost {
+  opacity: 0.4;
+  outline: 2px dashed #3b82f6;
+  outline-offset: -2px;
+  border-radius: 12px;
+}
+.sortable-chosen {
+  cursor: grabbing;
+}
+.sortable-drag {
+  opacity: 0.9;
+  transform: scale(1.02);
+}
+
+/* ============================================================
+   BOTÃO "CARREGAR MAIS" (paginação incremental)
+   ============================================================ */
+#load-more-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   ALERTA DE ANEXAR OFX (mensagens de divergência)
+   ============================================================ */
+#append-alert.append-ok {
+  background-color: #ecfdf5;
+  border-color: #10b981;
+  color: #065f46;
+}
+.dark #append-alert.append-ok {
+  background-color: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #a7f3d0;
+}
+#append-alert.append-warn {
+  background-color: #fffbeb;
+  border-color: #f59e0b;
+  color: #92400e;
+}
+.dark #append-alert.append-warn {
+  background-color: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #fde68a;
+}
+#append-alert.append-err {
+  background-color: #fef2f2;
+  border-color: #ef4444;
+  color: #991b1b;
+}
+.dark #append-alert.append-err {
+  background-color: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #fecaca;
+}

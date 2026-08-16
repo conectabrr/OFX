@@ -47,6 +47,8 @@ export const renderer = jsxRenderer(({ children }) => {
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/themes/dark.css" />
         <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/pt.js"></script>
+        {/* SortableJS — reordenar blocos do dashboard por arrastar-e-soltar */}
+        <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
         <link href="/static/style.css" rel="stylesheet" />
       </head>
       <body class="bg-slate-950 min-h-screen">{children}</body>

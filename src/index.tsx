@@ -76,6 +76,31 @@ app.get('/', (c) => {
 
         {/* Dashboard */}
         <section id="dashboard" class="hidden">
+          {/* Botão para carregar segundo OFX sequencial */}
+          <div id="append-ofx-wrapper" class="mb-4 sm:mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-slate-800/70 dark:to-slate-800/40 border border-blue-200 dark:border-blue-800/60 rounded-xl p-4 flex items-center justify-between gap-3 flex-wrap">
+            <div class="flex items-center gap-3">
+              <i class="fas fa-layer-group text-blue-600 dark:text-blue-400 text-xl"></i>
+              <div>
+                <div class="text-sm font-semibold text-gray-800 dark:text-slate-100">Anexar OFX sequencial</div>
+                <div class="text-xs text-gray-600 dark:text-slate-400">Junte outro extrato que continua o período (ex.: 1ª e 2ª quinzena)</div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <input type="file" id="append-file-input" accept=".ofx,.OFX" class="hidden" />
+              <button
+                type="button"
+                id="append-file-btn"
+                class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition inline-flex items-center gap-2"
+              >
+                <i class="fas fa-plus"></i>
+                <span>Adicionar próximo OFX</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Alerta de divergência entre extratos anexados */}
+          <div id="append-alert" class="hidden mb-4 sm:mb-6 rounded-xl border p-4" role="alert"></div>
+
           {/* Account Info */}
           <div id="account-info" class="collapsible bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
             <div class="flex items-center justify-between mb-3">
@@ -98,7 +123,18 @@ app.get('/', (c) => {
             </div>
           </div>
 
+          {/* Container reordenável dos blocos.  Os filhos diretos são
+              blocos independentes (Cards de Resumo, Calculadora, Gráfico,
+              Filtros, Movimentos, Transações). Cada um tem
+              [data-block-id] para persistir a ordem no localStorage. */}
+          <div id="dashboard-blocks">
+
           {/* Summary Cards */}
+          <div class="draggable-block" data-block-id="summary">
+          <div class="block-drag-handle" title="Arrastar para reordenar">
+            <i class="fas fa-grip-vertical"></i>
+            <span class="block-drag-label">Resumo</span>
+          </div>
           <div class="grid grid-cols-2 lg:grid-cols-5 gap-2 sm:gap-4 mb-4 sm:mb-6">
             <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-3 sm:p-5 border-l-4 border-blue-500">
               <div class="text-[10px] sm:text-xs text-gray-500 dark:text-slate-400 uppercase font-semibold">Transações</div>
@@ -121,13 +157,19 @@ app.get('/', (c) => {
               <div class="text-[10px] sm:text-xs text-gray-400 dark:text-slate-500 mt-1">créditos - débitos</div>
             </div>
             <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-3 sm:p-5 border-l-4 border-purple-500 col-span-2 lg:col-span-1">
-              <div class="text-[10px] sm:text-xs text-gray-500 dark:text-slate-400 uppercase font-semibold">Ticket Médio</div>
+              <div class="text-[10px] sm:text-xs text-gray-500 dark:text-slate-400 uppercase font-semibold">Valor Médio</div>
               <div id="stat-avg" class="text-base sm:text-2xl font-bold text-purple-600 dark:text-purple-400 mt-1">R$ 0,00</div>
-              <div class="text-[10px] sm:text-xs text-gray-400 dark:text-slate-500 mt-1">valor médio</div>
+              <div class="text-[10px] sm:text-xs text-gray-400 dark:text-slate-500 mt-1">média por transação</div>
             </div>
           </div>
+          </div>{/* /summary block */}
 
           {/* Percentage Calculator */}
+          <div class="draggable-block" data-block-id="calc">
+          <div class="block-drag-handle" title="Arrastar para reordenar">
+            <i class="fas fa-grip-vertical"></i>
+            <span class="block-drag-label">Calculadora</span>
+          </div>
           <div class="collapsible bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
             <div class="flex items-center justify-between mb-3 sm:mb-4">
               <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100">
@@ -192,6 +234,9 @@ app.get('/', (c) => {
                 >
                   R$ 0,00
                 </div>
+                {/* Detalhe R$ ↔ % — mostrado apenas na operação "Qual % (A é % de B)"
+                    para dar contexto visual em reais dos dois valores. */}
+                <div id="calc-detail" class="hidden mt-2 text-xs text-gray-600 dark:text-slate-400 leading-5 bg-gray-50 dark:bg-slate-900/40 border border-gray-200 dark:border-slate-700 rounded-lg px-3 py-2"></div>
               </div>
             </div>
             <p class="text-xs text-gray-500 dark:text-slate-400 mt-3">
@@ -202,8 +247,14 @@ app.get('/', (c) => {
             </p>
             </div>
           </div>
+          </div>{/* /calc block */}
 
           {/* Chart */}
+          <div class="draggable-block" data-block-id="chart">
+          <div class="block-drag-handle" title="Arrastar para reordenar">
+            <i class="fas fa-grip-vertical"></i>
+            <span class="block-drag-label">Evolução Diária</span>
+          </div>
           <div class="collapsible bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
             <div class="flex items-center justify-between mb-3 sm:mb-4">
               <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100">
@@ -224,12 +275,25 @@ app.get('/', (c) => {
               </div>
             </div>
           </div>
+          </div>{/* /chart block */}
 
           {/* Filters */}
+          <div class="draggable-block" data-block-id="filters">
+          <div class="block-drag-handle" title="Arrastar para reordenar">
+            <i class="fas fa-grip-vertical"></i>
+            <span class="block-drag-label">Filtros</span>
+          </div>
           <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
-            <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100 mb-3 sm:mb-4">
-              <i class="fas fa-filter text-blue-600 dark:text-blue-400 mr-2"></i>Filtros
-            </h2>
+            <div class="flex items-center justify-between flex-wrap gap-2 mb-3 sm:mb-4">
+              <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100">
+                <i class="fas fa-filter text-blue-600 dark:text-blue-400 mr-2"></i>Filtros
+              </h2>
+              {/* Info do período máximo do OFX carregado */}
+              <div id="filters-period-info" class="hidden text-xs sm:text-sm bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-200 rounded-lg px-3 py-1.5 flex items-center gap-2">
+                <i class="fas fa-info-circle"></i>
+                <span>Período do documento: <span id="filters-period-range" class="font-semibold"></span></span>
+              </div>
+            </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
               <div>
                 <label class="block text-xs font-semibold text-gray-600 dark:text-slate-300 mb-1">
@@ -248,23 +312,39 @@ app.get('/', (c) => {
                 <label class="block text-xs font-semibold text-gray-600 dark:text-slate-300 mb-1">
                   <i class="fas fa-calendar-day text-blue-500 mr-1"></i>Data/Hora Inicial
                 </label>
-                <input
-                  type="datetime-local"
-                  id="filter-start"
-                  step="60"
-                  class="filter-datetime"
-                />
+                {/* Wrapper com ícone de calendário dentro do bloco.
+                    O input é do tipo TEXT — o usuário pode digitar livremente
+                    a data no formato dd/mm/aaaa HH:MM. Clicar no ícone (ou no
+                    input) abre o Flatpickr. */}
+                <div class="datetime-input-wrapper">
+                  <input
+                    type="text"
+                    id="filter-start"
+                    class="filter-datetime"
+                    placeholder="dd/mm/aaaa HH:MM"
+                    autocomplete="off"
+                  />
+                  <button type="button" id="filter-start-cal" class="datetime-cal-btn" title="Abrir calendário" aria-label="Abrir calendário">
+                    <i class="fas fa-calendar-alt"></i>
+                  </button>
+                </div>
               </div>
               <div>
                 <label class="block text-xs font-semibold text-gray-600 dark:text-slate-300 mb-1">
                   <i class="fas fa-calendar-check text-blue-500 mr-1"></i>Data/Hora Final
                 </label>
-                <input
-                  type="datetime-local"
-                  id="filter-end"
-                  step="60"
-                  class="filter-datetime"
-                />
+                <div class="datetime-input-wrapper">
+                  <input
+                    type="text"
+                    id="filter-end"
+                    class="filter-datetime"
+                    placeholder="dd/mm/aaaa HH:MM"
+                    autocomplete="off"
+                  />
+                  <button type="button" id="filter-end-cal" class="datetime-cal-btn" title="Abrir calendário" aria-label="Abrir calendário">
+                    <i class="fas fa-calendar-alt"></i>
+                  </button>
+                </div>
               </div>
               <div>
                 <label class="block text-xs font-semibold text-gray-600 dark:text-slate-300 mb-1">
@@ -410,8 +490,14 @@ app.get('/', (c) => {
               </div>
             </div>
           </div>
+          </div>{/* /filters block */}
 
           {/* Counterparty Panel */}
+          <div class="draggable-block" data-block-id="movements">
+          <div class="block-drag-handle" title="Arrastar para reordenar">
+            <i class="fas fa-grip-vertical"></i>
+            <span class="block-drag-label">Movimentos</span>
+          </div>
           <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
             <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
               <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100">
@@ -446,8 +532,14 @@ app.get('/', (c) => {
               class="grid grid-cols-1 sm:grid-cols-2 gap-3"
             ></div>
           </div>
+          </div>{/* /movements block */}
 
           {/* Transactions Table */}
+          <div class="draggable-block" data-block-id="transactions">
+          <div class="block-drag-handle" title="Arrastar para reordenar">
+            <i class="fas fa-grip-vertical"></i>
+            <span class="block-drag-label">Transações</span>
+          </div>
           <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md overflow-hidden">
             <div class="p-4 sm:p-6 border-b border-gray-200 dark:border-slate-700 flex items-center justify-between flex-wrap gap-3">
               <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100">
@@ -475,29 +567,35 @@ app.get('/', (c) => {
                   class="border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-900 dark:text-slate-100 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
                   <option value="100">100</option>
+                  <option value="150">150</option>
+                  <option value="200">200</option>
+                  <option value="250">250</option>
+                  <option value="300">300</option>
+                  <option value="350">350</option>
+                  <option value="450">450</option>
                   <option value="500">500</option>
-                  <option value="1000">1000</option>
                 </select>
               </div>
             </div>
 
-            {/* Desktop table */}
-            <div class="overflow-x-auto hidden sm:block">
-              <table class="w-full">
-                <thead class="bg-gray-50 dark:bg-slate-900 border-b border-gray-200 dark:border-slate-700">
+            {/* Desktop table — grid completo (linhas horizontais + verticais)
+                e cabeçalho STICKY (acompanha o scroll da página). */}
+            <div class="hidden sm:block">
+              <table class="w-full transactions-table">
+                <thead class="transactions-thead bg-gray-50 dark:bg-slate-900 border-b border-gray-200 dark:border-slate-700">
                   <tr>
                     <th class="text-center px-2 py-3 w-10">
                       <input type="checkbox" id="select-all-header" class="rounded border-gray-300 dark:border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer" title="Selecionar/desmarcar todos" />
                     </th>
-                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Data/Hora</th>
-                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Tipo</th>
-                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Descrição</th>
-                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Conta Destino/Origem</th>
-                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="Nome do destinatário original da transação estornada/devolvida">Destinatário Estorno</th>
-                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="TxId = ID da transação (aparece no comprovante do banco). EndToEnd = EndToEndId BACEN (só PIX).">TxId / EndToEnd</th>
-                    <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Valor</th>
-                    <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Antes</th>
-                    <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Após</th>
+                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Data/Hora</th>
+                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Tipo</th>
+                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Descrição</th>
+                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Conta Destino/Origem</th>
+                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="Nome do destinatário original da transação estornada/devolvida">Destinatário Estorno</th>
+                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="TxId = ID da instituição (aparece no comprovante). E2E = EndToEndId BACEN (padrão do PIX). Ambos servem para buscar/identificar a transação.">TxId / EndToEnd</th>
+                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Valor</th>
+                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Antes</th>
+                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Após</th>
                   </tr>
                 </thead>
                 <tbody id="transactions-tbody" class="divide-y divide-gray-100 dark:divide-slate-700"></tbody>
@@ -506,7 +604,7 @@ app.get('/', (c) => {
                     <td colspan="7" class="px-3 py-3 text-right font-semibold text-gray-700 dark:text-slate-200">
                       Total filtrado<span id="filtered-total-label">:</span>
                     </td>
-                    <td id="filtered-total" class="px-3 py-3 text-right font-bold text-gray-900 dark:text-slate-100">
+                    <td id="filtered-total" class="px-3 py-3 text-center font-bold text-gray-900 dark:text-slate-100">
                       R$ 0,00
                     </td>
                     <td colspan="2" class="px-3 py-3"></td>
@@ -525,6 +623,20 @@ app.get('/', (c) => {
             <div id="empty-state" class="hidden p-8 sm:p-12 text-center text-gray-500 dark:text-slate-400">
               <i class="fas fa-inbox text-3xl sm:text-4xl mb-3"></i>
               <p>Nenhuma transação encontrada com os filtros aplicados.</p>
+            </div>
+
+            {/* Botão "Carregar mais" — carrega a próxima página abaixo da
+                lista atual (append), sem navegar. Fica visível se houver
+                mais páginas depois da atual. */}
+            <div id="load-more-wrapper" class="hidden border-t border-gray-200 dark:border-slate-700 px-4 sm:px-6 py-3 flex items-center justify-center">
+              <button
+                id="load-more-btn"
+                type="button"
+                class="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition"
+              >
+                <i class="fas fa-arrow-down"></i>
+                <span id="load-more-label">Carregar mais</span>
+              </button>
             </div>
 
             {/* Paginação */}
@@ -550,6 +662,9 @@ app.get('/', (c) => {
               </div>
             </div>
           </div>
+          </div>{/* /transactions block */}
+
+          </div>{/* /dashboard-blocks */}
         </section>
       </main>
 

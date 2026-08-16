@@ -41,6 +41,8 @@ document.addEventListener('DOMContentLoaded', () => {
     ratio: 'É % de qual valor (R$)',
   };
 
+  const calcDetail = document.getElementById('calc-detail');
+
   function calc() {
     const v = parseBRNumber(calcValue.value);
     const p = parseBRNumber(calcPercent.value);
@@ -49,8 +51,18 @@ document.addEventListener('DOMContentLoaded', () => {
     calcSecondLabel.textContent = labels[op];
     calcHint.textContent = hints[op];
 
+    // Detalhe extra só faz sentido em ratio; oculta nos outros modos.
+    if (calcDetail && op !== 'ratio') {
+      calcDetail.classList.add('hidden');
+      calcDetail.textContent = '';
+    }
+
     if (v === null || p === null) {
       calcResult.textContent = op === 'ratio' ? '0,00%' : formatCurrency(0);
+      if (calcDetail && op === 'ratio') {
+        calcDetail.classList.add('hidden');
+        calcDetail.textContent = '';
+      }
       return;
     }
 
@@ -69,11 +81,29 @@ document.addEventListener('DOMContentLoaded', () => {
         display = formatCurrency(result);
         break;
       case 'ratio':
+        // "A é % de B" — mostra o percentual E os dois valores em R$
+        // lado a lado, para o usuário visualizar melhor a proporção.
         if (p === 0) {
           display = '—';
+          if (calcDetail) {
+            calcDetail.classList.remove('hidden');
+            calcDetail.innerHTML = `<span class="text-red-500">Valor de referência não pode ser R$ 0,00.</span>`;
+          }
         } else {
-          result = (v / p) * 100;
-          display = result.toFixed(2).replace('.', ',') + '%';
+          const pct = (v / p) * 100;
+          display = pct.toFixed(2).replace('.', ',') + '%';
+          if (calcDetail) {
+            const diff = p - v;
+            const diffLabel = diff >= 0 ? 'Falta para atingir B' : 'Ultrapassou B em';
+            calcDetail.classList.remove('hidden');
+            calcDetail.innerHTML = `
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div><span class="text-gray-400">A:</span> <span class="font-semibold text-gray-700 dark:text-slate-200">${formatCurrency(v)}</span></div>
+                <div><span class="text-gray-400">B:</span> <span class="font-semibold text-gray-700 dark:text-slate-200">${formatCurrency(p)}</span></div>
+                <div><span class="text-gray-400">${diffLabel}:</span> <span class="font-semibold ${diff >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-amber-600 dark:text-amber-400'}">${formatCurrency(Math.abs(diff))}</span></div>
+              </div>
+            `;
+          }
         }
         break;
     }
@@ -204,31 +234,54 @@ function parseOFX(content) {
     // reversalRecipient = pessoa envolvida na transação ORIGINAL (não neste
     // estorno). Fica vazio nesta fase; o pós-processamento resolve via
     // lookup por CORRECTFITID ou por "Transação #NNNNN".
-    //
-    // IMPORTANTE: NÃO usar counterparty.name aqui — a contraparte de um
-    // estorno-crédito costuma ser a instituição financeira ("CONSTRUTORA
-    // DI CASTELLI"), não o destinatário original do envio (ex: "Rodrigo").
-    // Para "Recebido de X - ESTORNO: ... #NNNNN", o destinatário original
-    // está na transação #NNNNN, NÃO em X.
     let reversalRecipient = '';
-    // Referência à transação: bancos brasileiros (Nubank, Itaú) colocam a
-    // referência da transação como "Transação #NNNNN" no MEMO.
-    // ESTE número É o que aparece no COMPROVANTE do app (Nubank mostra como
-    // "ID da transação", Itaú como "Nº da transação"). É extraído de TODAS
-    // as transações que tiverem esse padrão, não só estornos, porque é o
-    // identificador que o usuário vê no comprovante.
+
+    // ------------------------------------------------------------------
+    // IDENTIFICADORES DA TRANSAÇÃO (o que aparece no comprovante):
     //
-    // Para estornos, esse mesmo número também funciona como referência
-    // para casar o estorno com o débito/crédito original (ambos carregam
-    // o mesmo #NNNNN).
-    let txRefFromMemo = '';
+    // 1) TxId  = REFNUM do OFX
+    //    É o identificador da instituição que aparece no comprovante do
+    //    app do banco como "ID da transação" / "TxId". Exemplos reais
+    //    vistos no arquivo InfoPago/Nubank:
+    //       SE000372801790KKIKHDO4RAUII4PLGYLM
+    //       CIELO202608020000000000000002074774
+    //       mpqrinter171144758847
+    //       LINX00008DEF7D13DD39E09X855D81CB4B6
+    //       72ea7597dd33488f8e5b7093e9af64d2
+    //
+    // 2) EndToEndId (E2E) = padrão BACEN do PIX
+    //    Formato: E<ISPB-8-dígitos><timestamp><random>, 32 caracteres,
+    //    sempre começa com "E". Ex.: E82842386202608151811...
+    //    Este campo NEM SEMPRE está no OFX (muitos bancos, incluindo
+    //    Nubank/InfoPago, não exportam o E2E BACEN — o app o busca em
+    //    outra API). Só é preenchido se encontrarmos o padrão em MEMO,
+    //    NAME ou REFNUM.
+    //
+    // 3) "Transação #NNNNN" no MEMO
+    //    É uma referência INTERNA do provedor OFX (ex: nº sequencial
+    //    do processador InfoPago). NÃO é o TxId do comprovante — é só
+    //    uma referência de correlação entre estorno e transação original.
+    //    Guardamos apenas em `originalTxRef` para o lookup de estornos.
+    // ------------------------------------------------------------------
+    let originalTxRef = '';
     const txRefMatch = `${memo} ${name}`.match(/Transa[cç][aã]o\s*#\s*(\d{4,})/i);
-    if (txRefMatch) txRefFromMemo = txRefMatch[1];
+    if (txRefMatch) originalTxRef = txRefMatch[1];
     if (isReversal) {
       reversalReason = detectReversalReason(memo, name, correctFitId);
     }
-    // Compat com o restante do código (byTxRef lookup):
-    const originalTxRef = txRefFromMemo;
+
+    // TxId final = REFNUM. Se não houver REFNUM, cai para FITID (que
+    // pelo menos é único no arquivo). Nunca usa "#NNNNN" como TxId
+    // (isso é referência interna, não o ID do comprovante).
+    const txId = refNum || fitId || '';
+
+    // EndToEnd = extrair padrão E\d{31,32} de qualquer campo textual.
+    // Se o REFNUM já for um E2E (raro), aproveita. Senão, tenta MEMO/NAME.
+    // Se nenhum campo tiver E2E, fica vazio (não temos como inventar).
+    const E2E_REGEX = /\bE\d{31,32}\b/;
+    let endToEnd = '';
+    const e2eMatch = `${refNum} ${memo} ${name}`.match(E2E_REGEX);
+    if (e2eMatch) endToEnd = e2eMatch[0];
 
     transactions.push({
       id: fitId || `trn-${idx++}`,
@@ -255,20 +308,22 @@ function parseOFX(content) {
       boletoReason,                            // ex: "Boleto", "Título", "DDA", "Ticket"
       isPix,                                   // boolean: é transação PIX?
       // Identificadores da transação (o que aparece no comprovante):
-      //  - txId    : "Transação #NNNNN" do MEMO — É o ID que o app do banco
-      //              (Nubank, Itaú) mostra ao usuário no comprovante como
-      //              "ID da transação" / "Nº da transação". Fallback: FITID.
-      //  - endToEnd: REFNUM do OFX — identificador BACEN do PIX quando
-      //              existe (ex: "CIELO202608...", "SE00...", "E{ISPB}...",
-      //              "mpqrinter..."). Aparece no comprovante como
-      //              "ID de ponta a ponta" / "EndToEndId".
-      // Guardamos também fitId cru para exportações/debug.
-      txId: txRefFromMemo || fitId,            // ID mostrado no comprovante
-      endToEnd: refNum,                        // EndToEndId BACEN (só PIX)
+      //  - txId    : REFNUM do OFX (o ID da instituição que aparece no
+      //              comprovante como "TxId" / "ID da transação").
+      //              Ex.: "SE00...", "CIELO...", "mpqrinter...", "LINX..."
+      //              Fallback: FITID (dedup do OFX) quando REFNUM ausente.
+      //  - endToEnd: EndToEndId BACEN (padrão E\d{31,32}). Só existe se
+      //              o OFX exportar esse identificador em MEMO/NAME/REFNUM.
+      //              Muitos bancos brasileiros (Nubank/InfoPago) NÃO
+      //              exportam o E2E no OFX — o app do banco busca em API.
+      txId,                                    // ID do comprovante (REFNUM || FITID)
+      endToEnd,                                // EndToEndId BACEN (E\d{31,32}) ou vazio
       fitId,                                   // FITID do OFX (dedup/export)
       refNum,                                  // REFNUM cru (compat)
-      // originalTxRef = mesmo valor de txRefFromMemo, usado para casar
-      // estorno⇄transação original via byTxRef lookup.
+      // originalTxRef = número "#NNNNN" do MEMO, referência INTERNA
+      // do provedor OFX. Usado APENAS para casar estorno⇄transação
+      // original via byTxRef lookup. NUNCA mostrado como TxId (não é
+      // o ID que aparece no comprovante do banco).
       originalTxRef,
       // Chave de agrupamento normalizada para o painel de "Movimentos".
       // PIX: usa APENAS o nome normalizado (sem identificadores únicos),
@@ -512,7 +567,9 @@ function detectBoletoReason(trnType, memo, name) {
 
   if (text.includes('dda')) return 'DDA';
   if (text.includes('convenio')) return 'Convênio';
-  if (/\bticket\b/.test(text)) return 'Ticket';
+  // "TICKET" no OFX (InfoPago/InfinitePay) é o mesmo que boleto —
+  // troca aqui apenas para melhorar a identificação visual do usuário.
+  if (/\bticket\b/.test(text)) return 'Boleto';
   if (text.includes('titulo')) return 'Título';
   if (text.includes('ficha de compensacao') || text.includes('ficha compensacao')) return 'Ficha Compensação';
   if (text.includes('boleto')) return 'Boleto';
@@ -1096,20 +1153,66 @@ const exportBtn = document.getElementById('export-csv');
 const pageSizeSelect = document.getElementById('page-size');
 const counterpartyList = document.getElementById('counterparty-list');
 
+/**
+ * Descobre a data/hora da PRIMEIRA transação (mais antiga). Retorna null
+ * se não houver transações com data válida. Diferente de accountInfo.startDate
+ * (que é DTSTART do cabeçalho OFX), esta é a data REAL da transação mais
+ * antiga presente no arquivo.
+ */
+function computeTxnRangeStart() {
+  let min = null;
+  for (const t of state.transactions) {
+    if (t.date && !isNaN(t.date.getTime())) {
+      if (!min || t.date < min) min = t.date;
+    }
+  }
+  return min;
+}
+function computeTxnRangeEnd() {
+  let max = null;
+  for (const t of state.transactions) {
+    if (t.date && !isNaN(t.date.getTime())) {
+      if (!max || t.date > max) max = t.date;
+    }
+  }
+  return max;
+}
+/** Atualiza o badge "Período do documento" no cabeçalho de filtros. */
+function updatePeriodInfo(start, end) {
+  const wrapper = document.getElementById('filters-period-info');
+  const rangeEl = document.getElementById('filters-period-range');
+  if (!wrapper || !rangeEl) return;
+  if (start && end) {
+    rangeEl.textContent = `${formatDateTimeBR(start)} até ${formatDateTimeBR(end)}`;
+    wrapper.classList.remove('hidden');
+    wrapper.classList.add('inline-flex');
+  } else {
+    wrapper.classList.add('hidden');
+    wrapper.classList.remove('inline-flex');
+  }
+}
+
 function setupFilters() {
+  // Determina o intervalo real das TRANSAÇÕES (não do cabeçalho OFX,
+  // pois DTSTART/DTEND às vezes é o dia inteiro, não a hora real).
+  const realStart = computeTxnRangeStart();
+  const realEnd = computeTxnRangeEnd();
+
   // Define datas iniciais baseadas nas transações (com hora)
   if (state.accountInfo.startDate) {
-    // Inicia à meia-noite do primeiro dia
     const startAtMidnight = new Date(state.accountInfo.startDate);
     startAtMidnight.setHours(0, 0, 0, 0);
-    filterStart.value = formatDateTimeLocal(startAtMidnight);
+    filterStart.value = formatDateTimeBR(startAtMidnight);
   }
   if (state.accountInfo.endDate) {
-    // Final até 23:59 do último dia
     const endAtEndOfDay = new Date(state.accountInfo.endDate);
     endAtEndOfDay.setHours(23, 59, 0, 0);
-    filterEnd.value = formatDateTimeLocal(endAtEndOfDay);
+    filterEnd.value = formatDateTimeBR(endAtEndOfDay);
   }
+
+  // Mostra o PERÍODO REAL do documento (primeira e última transação)
+  // no bloco de filtros para orientar o usuário sobre o intervalo válido.
+  updatePeriodInfo(realStart, realEnd);
 
   // === Substitui o datepicker nativo por Flatpickr ===
   // O calendário nativo é minúsculo e não pode ser estilizado. Flatpickr
@@ -1236,40 +1339,100 @@ function setupFilters() {
 /**
  * Inicializa Flatpickr nos inputs de data/hora dos filtros.
  *
- * Motivação: o calendário nativo do <input type="datetime-local"> não pode
- * ser estilizado (o picker é rendered pelo navegador), e no Chromium é
- * pequeno demais. Flatpickr renderiza um calendário maior, com locale
- * pt-BR, seleção de hora e integração via 'change' event no input original.
+ * REQUISITO do usuário: quer PODER DIGITAR a data manualmente. O
+ * calendário só abre quando clica no ÍCONE ao lado do input (não abre
+ * automaticamente no focus/click do input, como faria o Flatpickr padrão).
  *
- * Preserva os handlers já registrados em setupFilters (que ouvem 'change').
+ * Estratégia:
+ *  - `allowInput: true` — deixa o Flatpickr aceitar digitação livre
+ *  - `clickOpens: false` — NÃO abre picker ao clicar/focar no input
+ *  - O botão .datetime-cal-btn (ícone) chama fp.open() manualmente
+ *  - Ao digitar, aceita formato brasileiro dd/mm/aaaa HH:MM (via parseDate)
+ *  - `dateFormat` = 'd/m/Y H:i' porque agora o input é TEXT (não datetime-local),
+ *    então o valor exibido = valor persistido, sem altInput duplicado.
  */
+// Guarda as instâncias criadas para poder abrir programaticamente
+const flatpickrInstances = { start: null, end: null };
+
 function initFlatpickr() {
   if (typeof window.flatpickr !== 'function') {
-    console.warn('Flatpickr não carregou — mantendo picker nativo.');
+    console.warn('Flatpickr não carregou — mantendo input de texto simples.');
     return;
   }
   const commonOpts = {
     enableTime: true,
     time_24hr: true,
-    dateFormat: 'Y-m-d\\TH:i', // formato do datetime-local
-    altInput: true,             // input visível formatado
-    altFormat: 'd/m/Y H:i',     // dd/mm/aaaa HH:MM
+    dateFormat: 'd/m/Y H:i',
     minuteIncrement: 1,
+    allowInput: true,   // permite digitar manualmente
+    clickOpens: false,  // NÃO abre ao clicar no input (só pelo botão)
     locale: (window.flatpickr && window.flatpickr.l10ns && window.flatpickr.l10ns.pt) || 'default',
     // Dispara 'change' no input original para acionar applyFilters()
     onChange: function(_selDates, _dateStr, instance) {
       instance.input.dispatchEvent(new Event('change', { bubbles: true }));
     },
   };
-  // Constrói a partir do valor já preenchido em setupFilters
-  window.flatpickr(filterStart, {
+  flatpickrInstances.start = window.flatpickr(filterStart, {
     ...commonOpts,
     defaultDate: filterStart.value || null,
   });
-  window.flatpickr(filterEnd, {
+  flatpickrInstances.end = window.flatpickr(filterEnd, {
     ...commonOpts,
     defaultDate: filterEnd.value || null,
   });
+
+  // Botões-calendário abrem o picker manualmente
+  const btnStart = document.getElementById('filter-start-cal');
+  const btnEnd = document.getElementById('filter-end-cal');
+  if (btnStart) {
+    btnStart.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (flatpickrInstances.start) flatpickrInstances.start.open();
+    });
+  }
+  if (btnEnd) {
+    btnEnd.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (flatpickrInstances.end) flatpickrInstances.end.open();
+    });
+  }
+}
+
+/**
+ * Converte um valor de filtro (dd/mm/aaaa HH:MM ou datetime-local) em Date.
+ * Retorna Date válida ou null se não parseável.
+ * Como os inputs agora são TEXT no formato pt-BR, precisamos parse manual.
+ */
+function parseFilterDateTime(str) {
+  if (!str) return null;
+  const s = String(str).trim();
+  if (!s) return null;
+  // Formato brasileiro: dd/mm/aaaa HH:MM (permite HH:MM:SS opcional)
+  const brMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (brMatch) {
+    const [, d, m, y, hh, mm, ss] = brMatch;
+    const dt = new Date(
+      parseInt(y, 10),
+      parseInt(m, 10) - 1,
+      parseInt(d, 10),
+      hh ? parseInt(hh, 10) : 0,
+      mm ? parseInt(mm, 10) : 0,
+      ss ? parseInt(ss, 10) : 0
+    );
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+  // Formato ISO/datetime-local: YYYY-MM-DDTHH:MM
+  const dt = new Date(s);
+  return isNaN(dt.getTime()) ? null : dt;
+}
+
+/** Formata Date → "dd/mm/aaaa HH:MM" (mesmo formato dos filtros agora). */
+function formatDateTimeBR(d) {
+  if (!d || isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /**
@@ -1601,18 +1764,15 @@ function applyFilters() {
     result = result.filter((t) => t.type === 'debit');
   }
 
-  // Filtro por data/hora (datetime-local dá valor no formato YYYY-MM-DDTHH:MM em hora local)
-  if (filterStart.value) {
-    const start = new Date(filterStart.value);
-    if (!isNaN(start.getTime())) {
-      result = result.filter((t) => t.date && t.date >= start);
-    }
+  // Filtro por data/hora — inputs agora são TEXT em formato brasileiro
+  // (dd/mm/aaaa HH:MM). Usa parseFilterDateTime que também aceita ISO.
+  const startDt = parseFilterDateTime(filterStart.value);
+  if (startDt) {
+    result = result.filter((t) => t.date && t.date >= startDt);
   }
-  if (filterEnd.value) {
-    const end = new Date(filterEnd.value);
-    if (!isNaN(end.getTime())) {
-      result = result.filter((t) => t.date && t.date <= end);
-    }
+  const endDt = parseFilterDateTime(filterEnd.value);
+  if (endDt) {
+    result = result.filter((t) => t.date && t.date <= endDt);
   }
 
   // Filtro por descrição - BUSCA AVANÇADA COMBINADA
@@ -1793,31 +1953,37 @@ function renderTable() {
         ? `<span class="text-amber-800 dark:text-amber-200 font-medium" title="Contraparte da transação original">${escapeHtml(t.reversalRecipient)}</span>`
         : (t.isReversal ? '<span class="text-gray-400 dark:text-slate-500 italic text-xs">Não identificado</span>' : dash);
 
-      // Coluna TxId / EndToEnd — exatamente o que aparece no comprovante:
-      //  - TxId    = "Transação #NNNNN" do MEMO (o ID que o Nubank/Itaú
-      //              mostra no comprovante como "ID da transação").
-      //              Fallback: FITID quando não há #NNNNN.
-      //  - EndToEnd = REFNUM do OFX (só quando é PIX com E2E) — o
-      //              identificador BACEN "ID de ponta a ponta".
+      // Coluna TxId / EndToEnd — os identificadores do comprovante:
+      //  - TxId    = REFNUM do OFX (ID da instituição, ex: SE0003...,
+      //              CIELO..., mpqrinter...). Aparece SEMPRE quando o
+      //              OFX tem REFNUM. Fallback: FITID.
+      //  - E2E     = EndToEndId BACEN (E\d{31,32}). Só aparece quando
+      //              o OFX contém o padrão E2E BACEN (raro em Nubank/
+      //              InfoPago — o app do banco busca em API separada).
       let txIdCell = dash;
       if (t.txId || t.endToEnd) {
         const lines = [];
-        if (t.txId) {
-          lines.push(`<div class="text-[12px] text-slate-200 font-mono" title="ID da transação (aparece no comprovante do banco)"><span class="text-[9px] text-slate-500 font-sans uppercase mr-1">TxId</span>${escapeHtml(t.txId)}</div>`);
-        }
         if (t.endToEnd) {
-          lines.push(`<div class="text-[11px] text-blue-300 font-mono break-all" title="EndToEndId — identificador BACEN do PIX"><span class="text-[9px] text-blue-400/70 font-sans uppercase mr-1">E2E</span>${escapeHtml(t.endToEnd)}</div>`);
+          // E2E BACEN em destaque quando existe (é o identificador
+          // mais autoritativo — funciona pra qualquer banco).
+          lines.push(`<div class="text-[11px] text-blue-300 font-mono break-all" title="EndToEndId BACEN — identificador universal do PIX. Serve para consulta em qualquer banco."><span class="text-[9px] text-blue-400/70 font-sans uppercase mr-1 tracking-wide">E2E</span>${escapeHtml(t.endToEnd)}</div>`);
         }
-        txIdCell = `<div class="space-y-0.5">${lines.join('')}</div>`;
+        if (t.txId) {
+          lines.push(`<div class="text-[11px] text-slate-200 font-mono break-all" title="TxId — ID da transação na instituição financeira (aparece no comprovante do banco)."><span class="text-[9px] text-slate-500 font-sans uppercase mr-1 tracking-wide">TxId</span>${escapeHtml(t.txId)}</div>`);
+        }
+        txIdCell = `<div class="space-y-0.5 max-w-[220px]">${lines.join('')}</div>`;
       }
 
+      // Todas as células centralizadas horizontalmente (requisito do
+      // usuário: "centralize o texto das colunas"). Valores e saldos
+      // ficam à direita do centro dentro da célula pela natureza numérica.
       return `
         <tr class="${rowClass}">
-          <td class="px-2 py-3 text-center">
+          <td class="px-2 py-3 text-center align-middle">
             <input type="checkbox" class="row-checkbox rounded border-gray-300 dark:border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer" data-id="${escapeHtml(t.id)}" ${isSelected ? 'checked' : ''} />
           </td>
-          <td class="px-3 py-3 text-sm text-gray-700 dark:text-slate-300 whitespace-nowrap">${formatDateTime(t.date)}</td>
-          <td class="px-3 py-3 whitespace-nowrap">
+          <td class="px-3 py-3 text-sm text-gray-700 dark:text-slate-300 whitespace-nowrap text-center align-middle">${formatDateTime(t.date)}</td>
+          <td class="px-3 py-3 whitespace-nowrap text-center align-middle">
             <span class="badge ${badgeClass}">
               <i class="fas fa-${t.type === 'credit' ? 'arrow-up' : 'arrow-down'} mr-1"></i>
               ${getTrnTypeLabel(t.trnType)}
@@ -1825,15 +1991,15 @@ function renderTable() {
             ${reversalBadge}
             ${boletoBadge}
           </td>
-          <td class="px-3 py-3 text-sm text-gray-800 dark:text-slate-200 max-w-md">${escapeHtml(t.description)}</td>
-          <td class="px-3 py-3 text-sm text-gray-700 dark:text-slate-300">${cpDisplay}</td>
-          <td class="px-3 py-3 text-sm">${reversalRecipientCell}</td>
-          <td class="px-3 py-3">${txIdCell}</td>
-          <td class="px-3 py-3 text-sm font-semibold text-right whitespace-nowrap ${valueClass}">
+          <td class="px-3 py-3 text-sm text-gray-800 dark:text-slate-200 max-w-md text-center align-middle">${escapeHtml(t.description)}</td>
+          <td class="px-3 py-3 text-sm text-gray-700 dark:text-slate-300 text-center align-middle">${cpDisplay}</td>
+          <td class="px-3 py-3 text-sm text-center align-middle">${reversalRecipientCell}</td>
+          <td class="px-3 py-3 text-center align-middle">${txIdCell}</td>
+          <td class="px-3 py-3 text-sm font-semibold text-center whitespace-nowrap align-middle ${valueClass}">
             ${sign} ${formatCurrency(t.absAmount)}
           </td>
-          <td class="px-3 py-3 text-xs text-right whitespace-nowrap">${balBefore}</td>
-          <td class="px-3 py-3 text-xs text-right whitespace-nowrap">${balAfter}</td>
+          <td class="px-3 py-3 text-xs text-center whitespace-nowrap align-middle">${balBefore}</td>
+          <td class="px-3 py-3 text-xs text-center whitespace-nowrap align-middle">${balAfter}</td>
         </tr>
       `;
     })
@@ -2053,10 +2219,13 @@ function renderPagination(from, to, total, pages) {
   const pagination = document.getElementById('pagination');
   const info = document.getElementById('pagination-info');
   const indicator = document.getElementById('page-indicator');
+  const loadMoreWrap = document.getElementById('load-more-wrapper');
+  const loadMoreLbl = document.getElementById('load-more-label');
 
   // Só mostra paginação se há mais de uma página
   if (pages <= 1) {
     pagination.classList.add('hidden');
+    if (loadMoreWrap) loadMoreWrap.classList.add('hidden');
     return;
   }
   pagination.classList.remove('hidden');
@@ -2069,6 +2238,20 @@ function renderPagination(from, to, total, pages) {
   document.getElementById('page-prev').disabled = state.currentPage === 1;
   document.getElementById('page-next').disabled = state.currentPage === pages;
   document.getElementById('page-last').disabled = state.currentPage === pages;
+
+  // Botão "Carregar mais": mostra quando existem itens além dos já exibidos
+  if (loadMoreWrap) {
+    const remaining = total - to;
+    if (remaining > 0) {
+      loadMoreWrap.classList.remove('hidden');
+      if (loadMoreLbl) {
+        const next = Math.min(state.pageSize, remaining);
+        loadMoreLbl.textContent = `Carregar mais ${next} (restam ${remaining})`;
+      }
+    } else {
+      loadMoreWrap.classList.add('hidden');
+    }
+  }
 }
 
 function escapeHtml(str) {
@@ -2965,4 +3148,327 @@ document.addEventListener('DOMContentLoaded', () => {
       if (label) label.textContent = isCollapsed ? 'Expandir' : 'Recolher';
     });
   });
+
+  // === SortableJS: reordenar blocos do dashboard por arrastar ===
+  initDashboardSort();
+
+  // === Botão "Carregar mais" (paginação incremental) ===
+  initLoadMore();
+
+  // === Botão "Adicionar próximo OFX" (extratos sequenciais) ===
+  initAppendOfx();
 });
+
+// ============================================================
+// SORTABLE: reordenar blocos do dashboard
+// ============================================================
+/**
+ * Deixa os blocos principais reordenáveis por drag-and-drop.
+ * A ordem é persistida em localStorage sob a chave 'ofx-block-order'.
+ * A alça de arraste é o elemento `.block-drag-handle` (topo do bloco).
+ */
+const BLOCK_ORDER_KEY = 'ofx-block-order';
+
+function initDashboardSort() {
+  const container = document.getElementById('dashboard-blocks');
+  if (!container) return;
+
+  // Restaura ordem salva ANTES de instanciar o Sortable (senão o
+  // Sortable "vê" a ordem inicial e serialize retorna ela).
+  applyBlockOrder();
+
+  if (typeof window.Sortable !== 'function') {
+    console.warn('SortableJS não carregou — ordenação por drag desativada.');
+    return;
+  }
+
+  window.Sortable.create(container, {
+    handle: '.block-drag-handle',
+    animation: 180,
+    ghostClass: 'sortable-ghost',
+    chosenClass: 'sortable-chosen',
+    dragClass: 'sortable-drag',
+    onEnd: () => {
+      const order = Array.from(container.querySelectorAll(':scope > .draggable-block'))
+        .map((el) => el.getAttribute('data-block-id'))
+        .filter(Boolean);
+      try { localStorage.setItem(BLOCK_ORDER_KEY, JSON.stringify(order)); } catch (e) {}
+    },
+  });
+}
+
+function applyBlockOrder() {
+  const container = document.getElementById('dashboard-blocks');
+  if (!container) return;
+  let saved;
+  try {
+    saved = JSON.parse(localStorage.getItem(BLOCK_ORDER_KEY) || 'null');
+  } catch (e) { saved = null; }
+  if (!Array.isArray(saved) || !saved.length) return;
+
+  const blocks = new Map();
+  container.querySelectorAll(':scope > .draggable-block').forEach((el) => {
+    const id = el.getAttribute('data-block-id');
+    if (id) blocks.set(id, el);
+  });
+
+  // Anexa na ordem salva; blocos novos ficam no fim
+  saved.forEach((id) => {
+    const el = blocks.get(id);
+    if (el) container.appendChild(el);
+    blocks.delete(id);
+  });
+  blocks.forEach((el) => container.appendChild(el));
+}
+
+// ============================================================
+// PAGINAÇÃO INCREMENTAL - "Carregar mais"
+// ============================================================
+/**
+ * Botão "Carregar mais" — em vez de navegar de página, INCREMENTA
+ * o pageSize efetivo para mostrar mais transações abaixo, e faz
+ * scroll suave até a nova posição.
+ *
+ * Nota: não altera state.pageSize (que ainda controla o seletor),
+ * mas incrementa state.currentPage para pular pra próxima faixa.
+ * Estratégia mais simples: aumenta pageSize temporariamente para
+ * carregar tudo até a página desejada.
+ */
+function initLoadMore() {
+  const btn = document.getElementById('load-more-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    // Aumenta o pageSize efetivo em +pageSize (dobra a quantidade
+    // visível) e re-renderiza. Como currentPage=1 e pageSize maior,
+    // mais itens aparecem na mesma "página".
+    const extra = state.pageSize;
+    state.pageSize = state.pageSize + extra;
+    state.currentPage = 1;
+    renderTable();
+    // Sincroniza o select mantendo o valor original visual — não
+    // sobrescrevemos o valor exibido no <select> para não confundir.
+    // Scroll até o fim da tabela para o usuário ver os novos itens.
+    setTimeout(() => {
+      const tbody = document.getElementById('transactions-tbody');
+      if (tbody && tbody.lastElementChild) {
+        tbody.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 60);
+  });
+}
+
+// ============================================================
+// UPLOAD SEQUENCIAL DE OFX (extratos concatenáveis)
+// ============================================================
+/**
+ * Permite ao usuário anexar um segundo OFX que representa um período
+ * subsequente. O sistema:
+ *  1. Faz parse do novo arquivo
+ *  2. Detecta divergências (sobreposição, gap, mesma janela)
+ *  3. Mescla as transações (deduplicando por FITID)
+ *  4. Recalcula tudo (saldos, filtros, período)
+ *  5. Mostra alerta com o resumo dos dois extratos
+ */
+function initAppendOfx() {
+  const btn = document.getElementById('append-file-btn');
+  const input = document.getElementById('append-file-input');
+  if (!btn || !input) return;
+  btn.addEventListener('click', () => input.click());
+  input.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+      handleAppendFile(e.target.files[0]);
+      input.value = ''; // permite reanexar o mesmo arquivo
+    }
+  });
+}
+
+function handleAppendFile(file) {
+  const ext = file.name.toLowerCase().split('.').pop();
+  if (ext !== 'ofx') {
+    showAppendAlert('err', '<strong>Arquivo inválido</strong>: precisa ser .ofx');
+    return;
+  }
+  if (!state.transactions.length) {
+    showAppendAlert('err', 'Nenhum extrato foi carregado ainda.');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      const buf = ev.target.result;
+      const enc = detectOFXEncoding(buf);
+      const decoder = new TextDecoder(enc, { fatal: false });
+      const content = decoder.decode(buf);
+      const parsed = parseOFX(content);
+      mergeSequentialOFX(parsed, file.name);
+    } catch (err) {
+      console.error(err);
+      showAppendAlert('err', 'Erro ao processar arquivo: ' + err.message);
+    }
+  };
+  reader.onerror = () => showAppendAlert('err', 'Não foi possível ler o arquivo.');
+  reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Mescla um segundo extrato com o carregado. Detecta:
+ *  - Sobreposição: janelas se cruzam → aviso de warn
+ *  - Gap: existe intervalo vazio entre um e outro → aviso de warn
+ *  - Conta diferente: ACCTID diferente → erro
+ *  - Sequencial perfeito: sem gap nem sobreposição → sucesso
+ */
+function mergeSequentialOFX(parsed, filename) {
+  const { accountInfo: newInfo, transactions: newTxns } = parsed;
+
+  // Valida se é a mesma conta (ACCTID)
+  const currentAcct = String(state.accountInfo.accountId || '').trim();
+  const newAcct = String(newInfo.accountId || '').trim();
+  if (currentAcct && newAcct && currentAcct !== newAcct) {
+    showAppendAlert('err',
+      `<strong>Contas diferentes</strong>: o extrato atual é da conta <code>${escapeHtml(currentAcct)}</code> ` +
+      `e o novo é da conta <code>${escapeHtml(newAcct)}</code>. ` +
+      `Só é possível anexar extratos da MESMA conta.`
+    );
+    return;
+  }
+
+  // Ranges reais (por transação) — mais confiável que DTSTART/DTEND
+  const curStart = computeTxnRangeStart();
+  const curEnd = computeTxnRangeEnd();
+  const newStart = newTxns.reduce((min, t) => (!min || (t.date && t.date < min)) ? t.date : min, null);
+  const newEnd = newTxns.reduce((max, t) => (!max || (t.date && t.date > max)) ? t.date : max, null);
+
+  if (!newStart || !newEnd) {
+    showAppendAlert('err', 'O novo extrato não contém transações com data válida.');
+    return;
+  }
+
+  // Detecta relação temporal entre as duas janelas
+  const analysis = analyzeRanges(curStart, curEnd, newStart, newEnd);
+
+  // Mescla e deduplica por FITID
+  const seen = new Set();
+  const combined = [];
+  const pushUnique = (t) => {
+    const key = t.fitId || t.id;
+    if (seen.has(key)) return;
+    seen.add(key);
+    combined.push(t);
+  };
+  state.transactions.forEach(pushUnique);
+  newTxns.forEach(pushUnique);
+
+  // Reordena por data para o cálculo de saldo funcionar
+  combined.sort((a, b) => (a.date?.getTime() || 0) - (b.date?.getTime() || 0));
+
+  // Recalcula evolução de saldos: âncora fica no saldo mais RECENTE
+  //   se o novo extrato termina depois do atual, usa BALAMT do novo;
+  //   senão, mantém o saldo atual como âncora.
+  const useNewBalance = newEnd >= curEnd;
+  const mergedInfo = {
+    ...state.accountInfo,
+    // Estende o range para incluir tudo
+    startDate: (state.accountInfo.startDate && newInfo.startDate)
+      ? new Date(Math.min(state.accountInfo.startDate.getTime(), newInfo.startDate.getTime()))
+      : (newInfo.startDate || state.accountInfo.startDate),
+    endDate: (state.accountInfo.endDate && newInfo.endDate)
+      ? new Date(Math.max(state.accountInfo.endDate.getTime(), newInfo.endDate.getTime()))
+      : (newInfo.endDate || state.accountInfo.endDate),
+    balance: useNewBalance ? newInfo.balance : state.accountInfo.balance,
+    balanceDate: useNewBalance ? newInfo.balanceDate : state.accountInfo.balanceDate,
+  };
+  // Recalcula saldo antes/depois de cada transação
+  computeBalanceEvolution(combined, mergedInfo);
+
+  const addedCount = combined.length - state.transactions.length;
+  const duplicates = newTxns.length - addedCount;
+
+  state.transactions = combined;
+  state.accountInfo = mergedInfo;
+  state.filtered = [...combined];
+
+  // Reabre o dashboard com os dados mesclados
+  renderDashboard();
+
+  // Monta o alerta com o resumo
+  const parts = [];
+  parts.push(`<strong>Arquivo anexado</strong>: ${escapeHtml(filename)}`);
+  parts.push(`<span class="mx-2">·</span>`);
+  parts.push(`${newTxns.length} transações lidas`);
+  if (duplicates > 0) {
+    parts.push(`<span class="mx-2">·</span>`);
+    parts.push(`${duplicates} duplicadas (ignoradas)`);
+  }
+  parts.push(`<span class="mx-2">·</span>`);
+  parts.push(`${addedCount} novas`);
+
+  let severity = 'ok';
+  let extra = '';
+  if (analysis.type === 'sequential') {
+    extra = `<div class="text-xs mt-2"><i class="fas fa-check-circle mr-1"></i>Extratos sequenciais: ` +
+      `1º termina em ${formatDateTimeBR(analysis.aEnd)} · 2º começa em ${formatDateTimeBR(analysis.bStart)}.</div>`;
+  } else if (analysis.type === 'gap') {
+    severity = 'warn';
+    extra = `<div class="text-xs mt-2"><i class="fas fa-exclamation-triangle mr-1"></i>` +
+      `<strong>Intervalo em branco</strong>: existe um vão entre ` +
+      `${formatDateTimeBR(analysis.aEnd)} e ${formatDateTimeBR(analysis.bStart)} sem transações. ` +
+      `Se você esperava movimento nesse período, pode faltar um OFX intermediário.</div>`;
+  } else if (analysis.type === 'overlap') {
+    severity = 'warn';
+    extra = `<div class="text-xs mt-2"><i class="fas fa-exclamation-triangle mr-1"></i>` +
+      `<strong>Sobreposição de períodos</strong>: as janelas se cruzam entre ` +
+      `${formatDateTimeBR(analysis.overlapStart)} e ${formatDateTimeBR(analysis.overlapEnd)}. ` +
+      `Transações com mesmo FITID foram deduplicadas.</div>`;
+  } else if (analysis.type === 'contains') {
+    severity = 'warn';
+    extra = `<div class="text-xs mt-2"><i class="fas fa-exclamation-triangle mr-1"></i>` +
+      `<strong>Períodos contidos</strong>: um extrato está totalmente dentro do outro. Duplicatas foram removidas.</div>`;
+  } else if (analysis.type === 'reverse-sequential') {
+    extra = `<div class="text-xs mt-2"><i class="fas fa-check-circle mr-1"></i>Extratos sequenciais (ordem invertida): ` +
+      `1º começa em ${formatDateTimeBR(analysis.bStart)} · 2º termina em ${formatDateTimeBR(analysis.aEnd)}.</div>`;
+  }
+
+  showAppendAlert(severity, parts.join('') + extra);
+}
+
+/**
+ * Analisa a relação entre dois intervalos [aStart, aEnd] e [bStart, bEnd].
+ * Retorna { type, ... } com:
+ *  - 'sequential': b começa logo depois de a (gap < 1 dia)
+ *  - 'reverse-sequential': a começa logo depois de b
+ *  - 'gap': há um intervalo maior entre eles
+ *  - 'overlap': as janelas se cruzam
+ *  - 'contains': uma está totalmente dentro da outra
+ */
+function analyzeRanges(aStart, aEnd, bStart, bEnd) {
+  if (!aStart || !aEnd || !bStart || !bEnd) return { type: 'unknown' };
+  const ONE_DAY = 24 * 60 * 60 * 1000;
+  // b totalmente depois de a?
+  if (bStart >= aEnd) {
+    const gap = bStart.getTime() - aEnd.getTime();
+    if (gap <= ONE_DAY) return { type: 'sequential', aEnd, bStart };
+    return { type: 'gap', aEnd, bStart };
+  }
+  // a totalmente depois de b?
+  if (aStart >= bEnd) {
+    const gap = aStart.getTime() - bEnd.getTime();
+    if (gap <= ONE_DAY) return { type: 'reverse-sequential', aEnd, bStart };
+    return { type: 'gap', aEnd: bEnd, bStart: aStart };
+  }
+  // b contido em a ou a contido em b?
+  if ((bStart >= aStart && bEnd <= aEnd) || (aStart >= bStart && aEnd <= bEnd)) {
+    return { type: 'contains' };
+  }
+  // Cruzamento parcial
+  const overlapStart = new Date(Math.max(aStart.getTime(), bStart.getTime()));
+  const overlapEnd = new Date(Math.min(aEnd.getTime(), bEnd.getTime()));
+  return { type: 'overlap', overlapStart, overlapEnd };
+}
+
+function showAppendAlert(severity, html) {
+  const el = document.getElementById('append-alert');
+  if (!el) return;
+  el.classList.remove('append-ok', 'append-warn', 'append-err', 'hidden');
+  el.classList.add('append-' + severity);
+  el.innerHTML = html;
+}
