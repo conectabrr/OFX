@@ -398,15 +398,6 @@ html:not(.dark) {
 .dark .movement-card .mv-total-reversal {
   color: #fbbf24;
 }
-.movement-card .mv-avg {
-  font-size: 10px;
-  color: #94a3b8;
-  font-weight: 500;
-  margin-top: 3px;
-}
-.dark .movement-card .mv-avg {
-  color: #64748b;
-}
 /* Linha "quem receberia/recebeu a transação original" nos estornos */
 .movement-card .mv-reversal-recipients {
   font-size: 10px;
@@ -504,6 +495,92 @@ html:not(.dark) {
 }
 .dark .filter-datetime::-webkit-datetime-edit-text {
   color: #94a3b8;
+}
+
+/* ============================================================
+   FLATPICKR — CALENDÁRIO GRANDE (substitui o picker nativo)
+   ============================================================
+   O CSS base do flatpickr é carregado via CDN. Aqui só aumentamos
+   os tamanhos para atender ao pedido do usuário de "calendário maior
+   e melhor" ao ABRIR (não o input em si, que já ficou bom). */
+.flatpickr-calendar {
+  font-size: 15px !important;
+  width: 360px !important;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5) !important;
+  border-radius: 12px !important;
+  padding: 4px !important;
+}
+/* Dias do mês — cada célula maior */
+.flatpickr-calendar .flatpickr-day {
+  height: 40px !important;
+  line-height: 40px !important;
+  max-width: 44px !important;
+  font-size: 14px !important;
+  border-radius: 8px !important;
+}
+.flatpickr-calendar .flatpickr-days,
+.flatpickr-calendar .dayContainer {
+  width: 100% !important;
+  min-width: 100% !important;
+  max-width: 100% !important;
+}
+/* Cabeçalho do mês/ano */
+.flatpickr-calendar .flatpickr-months .flatpickr-month {
+  height: 44px !important;
+}
+.flatpickr-calendar .flatpickr-current-month {
+  font-size: 16px !important;
+  padding-top: 6px !important;
+}
+.flatpickr-calendar .flatpickr-current-month .cur-month,
+.flatpickr-calendar .flatpickr-current-month input.cur-year {
+  font-size: 16px !important;
+  font-weight: 600 !important;
+}
+.flatpickr-calendar .flatpickr-monthDropdown-months {
+  font-size: 15px !important;
+  font-weight: 600 !important;
+}
+/* Setas de navegação mês anterior/próximo */
+.flatpickr-calendar .flatpickr-prev-month,
+.flatpickr-calendar .flatpickr-next-month {
+  padding: 12px !important;
+}
+.flatpickr-calendar .flatpickr-prev-month svg,
+.flatpickr-calendar .flatpickr-next-month svg {
+  width: 18px !important;
+  height: 18px !important;
+}
+/* Nomes dos dias da semana (Dom, Seg…) */
+.flatpickr-calendar .flatpickr-weekdays {
+  height: 34px !important;
+}
+.flatpickr-calendar .flatpickr-weekday {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+/* Time picker (hora/minuto) maior */
+.flatpickr-calendar .flatpickr-time {
+  height: 52px !important;
+  border-top: 1px solid rgba(148, 163, 184, 0.2) !important;
+}
+.flatpickr-calendar .flatpickr-time input {
+  font-size: 20px !important;
+  font-weight: 600 !important;
+}
+.flatpickr-calendar .flatpickr-time .flatpickr-time-separator {
+  font-size: 20px !important;
+}
+/* Hover / seleção */
+.flatpickr-day.today {
+  border-color: #3b82f6 !important;
+  color: #3b82f6 !important;
+}
+.flatpickr-day.selected,
+.flatpickr-day.startRange,
+.flatpickr-day.endRange {
+  background: #2563eb !important;
+  border-color: #2563eb !important;
 }
 
 /* ============================================================
