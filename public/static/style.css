@@ -217,6 +217,7 @@ html:not(.dark) {
   border-radius: 10px;
   border: 1px dashed #cbd5e1;
   background: rgba(148, 163, 184, 0.06);
+  text-align: center; /* centraliza label + valor da calculadora */
 }
 .dark .calc-result-box {
   border-color: #475569;
@@ -228,6 +229,7 @@ html:not(.dark) {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.02em;
+  text-align: center;
 }
 .dark .calc-result-label {
   color: #94a3b8;
@@ -238,6 +240,7 @@ html:not(.dark) {
   font-variant-numeric: tabular-nums;
   color: #0f172a;
   margin-top: 2px;
+  text-align: center;
 }
 .dark .calc-result-value {
   color: #f1f5f9;
@@ -806,18 +809,29 @@ html:not(.dark) {
   word-break: break-word;
 }
 
-/* Bordas horizontais entre linhas (grid horizontal) */
-.transactions-table tbody tr {
-  border-bottom: 1px solid #e5e7eb;
+/* Bordas horizontais entre linhas (grid horizontal) — REFORÇADAS.
+   O usuário pediu explicitamente "insira as linhas em cada transação,
+   separando para melhor visualização, para ficar como uma tabela mesmo".
+   Portanto usamos border-bottom nos TDs (mais confiável que no <tr>) e
+   aumentamos contraste. */
+.transactions-table tbody td {
+  border-bottom: 1px solid #cbd5e1;
 }
-.dark .transactions-table tbody tr {
-  border-bottom-color: #334155;
-}
-.transactions-table tbody tr:last-child {
-  border-bottom: 2px solid #d1d5db;
-}
-.dark .transactions-table tbody tr:last-child {
+.dark .transactions-table tbody td {
   border-bottom-color: #475569;
+}
+.transactions-table tbody tr:last-child td {
+  border-bottom: 2px solid #94a3b8;
+}
+.dark .transactions-table tbody tr:last-child td {
+  border-bottom-color: #64748b;
+}
+/* Zebra sutil para reforçar a separação visual entre linhas */
+.transactions-table tbody tr:nth-child(even) td {
+  background-color: rgba(148, 163, 184, 0.04);
+}
+.dark .transactions-table tbody tr:nth-child(even) td {
+  background-color: rgba(30, 41, 59, 0.35);
 }
 
 /* Sticky header — o cabeçalho da tabela acompanha o scroll VERTICAL

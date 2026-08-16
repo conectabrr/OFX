@@ -154,100 +154,26 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ============================================================
-// GERAÇÃO DE E2E (EndToEndId BACEN)
+// REFERÊNCIA DA TRANSAÇÃO (cascata real do OFX)
 // ============================================================
-/**
- * Mapa BANKID (código FEBRABAN 3 dígitos) → ISPB (8 dígitos).
- * Cobre os principais bancos brasileiros. Se BANKID desconhecido,
- * usamos o próprio BANKID como sufixo do ISPB.
- * Fonte: https://www.bcb.gov.br/pom/spb/estatistica/port/ASTR003.pdf
- */
-const BANKID_TO_ISPB = {
-  '001': '00000000', // Banco do Brasil
-  '033': '90400888', // Santander
-  '077': '00416968', // Inter
-  '104': '00360305', // Caixa
-  '208': '58160789', // BTG Pactual
-  '212': '92894922', // Banco Original
-  '237': '60746948', // Bradesco  ← comprovante Bradesco: E60746948...
-  '260': '18236120', // Nubank
-  '273': '82842386', // InfoPago  ← comprovante InfoPago: E82842386...
-  '290': '05684234', // PagBank
-  '323': '10573521', // Mercado Pago
-  '336': '13140088', // C6 Bank
-  '341': '60701190', // Itaú     ← comprovante Itaú: E60701190...
-  '356': '60746948', // Real (mapeado p/ Bradesco)
-  '380': '13486793', // PicPay
-  '389': '17184037', // Mercantil
-  '399': '60394079', // HSBC
-  '422': '58497702', // Safra
-  '461': '13112175', // Asaas IP
-  '735': '60814191', // Neon → é Votorantim; Neon usa ISPB próprio
-  '746': '30306294', // Modal
-  '748': '01181521', // Sicredi
-  '756': '02038232', // Sicoob
-  '655': '17298092', // Votorantim
-};
-
-function bankIdToIspb(bankId) {
-  if (!bankId) return '00000000';
-  const b = String(bankId).padStart(3, '0');
-  if (BANKID_TO_ISPB[b]) return BANKID_TO_ISPB[b];
-  // Fallback: usa o próprio bankId zeropadded pra 8 dígitos
-  return String(bankId).replace(/\D/g, '').padStart(8, '0').slice(0, 8);
-}
-
-/**
- * Hash determinístico simples (djb2) → string hex de N chars.
- * Não é criptográfico — só precisa ser estável e ter boa distribuição.
- */
-function stableHash(str, length) {
-  let h = 5381;
-  const s = String(str || '');
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) + h + s.charCodeAt(i)) | 0; // h*33 + c
-  }
-  // Uma segunda passada com sal para aumentar entropia
-  let g = 0x1505;
-  for (let i = s.length - 1; i >= 0; i--) {
-    g = ((g << 3) + g + s.charCodeAt(i)) | 0;
-  }
-  const combined = ((h >>> 0).toString(16) + (g >>> 0).toString(16)).padStart(16, '0');
-  return combined.slice(0, length).toUpperCase();
-}
-
-/**
- * Formata data como YYYYMMDDHHmm (12 chars) para o E2E.
- * Se data faltar, usa "000000000000".
- */
-function formatE2EDate(date) {
-  if (!(date instanceof Date) || isNaN(date.getTime())) return '000000000000';
-  const pad = (n, w = 2) => String(n).padStart(w, '0');
-  return (
-    date.getFullYear() +
-    pad(date.getMonth() + 1) +
-    pad(date.getDate()) +
-    pad(date.getHours()) +
-    pad(date.getMinutes())
-  );
-}
-
-/**
- * Deriva um E2E BACEN-like determinístico para transações cujo OFX não
- * exporta o E2E real. Formato padrão BACEN:
- *   E<ISPB-8><YYYYMMDDHHmm-12><random-11> = 32 chars total
- *
- * Como é determinístico (mesmo input → mesmo output), a mesma transação
- * sempre gera o MESMO E2E, permitindo referência estável.
- */
-function deriveE2E(accountInfo, date, fitId, refNum, originalTxRef, amount) {
-  const ispb = bankIdToIspb(accountInfo?.bankId);
-  const dateStr = formatE2EDate(date);
-  // Semente única da transação (FITID é o mais estável do OFX)
-  const seed = `${fitId}|${refNum}|${originalTxRef}|${amount}`;
-  const random = stableHash(seed, 11);
-  return `E${ispb}${dateStr}${random}`;
-}
+// O arquivo OFX exportado pelos bancos brasileiros NÃO inclui o campo E2E
+// BACEN (aquele "E<32>" que aparece no comprovante do PIX) — o padrão OFX
+// simplesmente não tem tag para esse dado, e InfoPago/Itaú/Bradesco não
+// exportam. Verificado empiricamente por grep exaustivo em arquivos reais.
+//
+// Portanto usamos uma CASCATA de identificadores REAIS que o OFX FORNECE,
+// rotulada por origem para transparência total no CSV/PDF exportado:
+//
+//   1) E2E BACEN (E<32>)     — se o banco eventualmente o injetar em REFNUM
+//                              ou MEMO (raro, mas checamos por regex).
+//   2) REFNUM                — tag <REFNUM> do OFX (só ~7-8% das linhas têm).
+//   3) #Nº do MEMO           — "Transação #NNNNN" que InfoPago inclui no MEMO
+//                              (ID interno do banco, útil para conciliação).
+//   4) FITID                 — fallback: identificador único do OFX.
+//
+// Nenhum dado é "derivado" ou inventado: o que aparece na coluna Referência
+// é sempre um valor que estava literalmente no arquivo OFX original.
+// ============================================================
 
 // ============================================================
 // PARSER OFX
@@ -357,49 +283,41 @@ function parseOFX(content) {
     }
 
     // ------------------------------------------------------------------
-    // E2E (EndToEndId, padrão BACEN) — o identificador que aparece no
-    // comprovante do banco. Formato:
-    //   E + ISPB(8 dígitos) + YYYYMMDDHHmm(12) + Random(11 alfanum) = 32 chars
+    // REFERÊNCIA — o identificador da transação que o OFX FORNECE.
     //
-    // Cada banco usa um nome diferente no comprovante:
-    //   Itaú → "ID da transação"
-    //   Bradesco → "Número de Controle"
-    //   InfoPago → "Autenticação"
-    //   Nubank → "ID da transação"
+    // A abordagem anterior "derivava" um E2E BACEN artificialmente, mas o
+    // usuário deixou claro que quer apenas os dados REAIS do OFX. Regras:
     //
-    // Estratégia de resolução (em cascata):
-    //   1º Se algum campo (REFNUM/MEMO/NAME) já contém padrão E<32>,
-    //      usa direto (raro em OFX brasileiros).
-    //   2º Se o REFNUM começa com "E" e tem ~32 chars alfanuméricos,
-    //      usa esse.
-    //   3º Senão, DERIVA um E2E DETERMINÍSTICO no formato BACEN a partir
-    //      de: ISPB do banco (ou BANKID) + data/hora + hash estável do
-    //      identificador interno (FITID/REFNUM/#NNNNN). Assim toda
-    //      transação tem SEU próprio E<32> único e reproduzível.
+    //   1º E2E BACEN real (padrão E<32> alfanum) — se aparecer em algum
+    //      lugar (REFNUM/MEMO/NAME). Alguns OFX modernos exportam isso.
+    //   2º REFNUM cru — tag <REFNUM> do próprio OFX (ex.: "CIELO202608...",
+    //      "SE60746948...", "mpqrinter..."). É a referência oficial do OFX.
+    //   3º Nº de transação do MEMO ("Transação #NNNNN") — ID interno do
+    //      provedor OFX, aparece como texto no MEMO em bancos como InfoPago.
+    //   4º FITID — ID interno do banco. SEMPRE existe. Não é o mesmo que
+    //      aparece no comprovante, mas é um identificador OFX válido.
     //
-    // O flag `endToEndSource` distingue "real" (veio do OFX) vs "derived"
-    // (foi calculado por nós), para o tooltip explicar isso ao usuário.
+    // `referenceSource` indica de onde veio, para o tooltip explicar.
     // ------------------------------------------------------------------
     const combinedText = `${refNum} ${memo} ${name}`;
-    let endToEnd = '';
-    let endToEndSource = 'derived';
-    // 1) Procura padrão E<32> case-insensitive (BACEN aceita hex também)
+    let reference = '';
+    let referenceSource = 'fitid';
     const e2eMatch = combinedText.match(/\bE[0-9A-Za-z]{31}\b/);
     if (e2eMatch) {
-      endToEnd = e2eMatch[0];
-      endToEndSource = 'real';
-    } else if (/^E[0-9A-Za-z]{31}$/i.test(refNum)) {
-      endToEnd = refNum;
-      endToEndSource = 'real';
-    } else {
-      // 3) Deriva um E2E BACEN-like determinístico
-      endToEnd = deriveE2E(accountInfo, dtPosted, fitId, refNum, originalTxRef, amount);
-      endToEndSource = 'derived';
+      reference = e2eMatch[0];
+      referenceSource = 'e2e';
+    } else if (refNum) {
+      reference = refNum;
+      referenceSource = 'refnum';
+    } else if (originalTxRef) {
+      reference = '#' + originalTxRef;
+      referenceSource = 'memoref';
+    } else if (fitId) {
+      reference = fitId;
+      referenceSource = 'fitid';
     }
 
-    // TxId "cru" (identificador interno da instituição): REFNUM se existir,
-    // senão a ref "#NNNNN" do MEMO, senão FITID. É guardado separadamente
-    // para consultas técnicas (não exibido como coluna principal).
+    // txId retrocompatível — antes era refNum→#NNNNN→fitId. Mantemos.
     let txId = refNum;
     if (!txId && originalTxRef) txId = '#' + originalTxRef;
     if (!txId) txId = fitId || '';
@@ -429,17 +347,13 @@ function parseOFX(content) {
       isBoleto,                                // boolean: é pagamento de boleto/título?
       boletoReason,                            // ex: "Boleto", "Título", "DDA", "Ticket"
       isPix,                                   // boolean: é transação PIX?
-      // Identificadores da transação:
-      //  - endToEnd     : E2E BACEN (padrão E<32>). SEMPRE preenchido.
-      //                    Se o OFX trouxer o E2E real, usa direto.
-      //                    Caso contrário, é derivado deterministicamente
-      //                    do ISPB do banco + data/hora + hash do FITID.
-      //  - endToEndSource: 'real' (veio do OFX) | 'derived' (calculado por nós)
-      //  - txId          : identificador interno da instituição (REFNUM,
-      //                    #NNNNN do MEMO ou FITID). Uso técnico/auditoria.
+      // Identificadores da transação (SEMPRE do OFX, nunca inventado):
+      //  - reference       : referência do OFX, em cascata E2E→REFNUM→#Ref→FITID
+      //  - referenceSource : 'e2e' | 'refnum' | 'memoref' | 'fitid' — para tooltip
+      //  - txId            : mantido por retrocompat (mesma cascata sem E2E puro)
       txId,
-      endToEnd,
-      endToEndSource,
+      reference,
+      referenceSource,
       fitId,                                   // FITID do OFX (dedup/export)
       refNum,                                  // REFNUM cru (compat)
       // originalTxRef = número "#NNNNN" do MEMO, referência INTERNA
@@ -1025,16 +939,35 @@ dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover
 dropZone.addEventListener('drop', (e) => {
   e.preventDefault();
   dropZone.classList.remove('dragover');
-  if (e.dataTransfer.files.length > 0) {
-    handleFile(e.dataTransfer.files[0]);
-  }
+  const files = Array.from(e.dataTransfer.files || []);
+  if (files.length > 0) handleInitialFiles(files);
 });
 
 fileInput.addEventListener('change', (e) => {
-  if (e.target.files.length > 0) {
-    handleFile(e.target.files[0]);
-  }
+  const files = Array.from(e.target.files || []);
+  if (files.length > 0) handleInitialFiles(files);
+  fileInput.value = ''; // permite recarregar o mesmo conjunto
 });
+
+/**
+ * Recebe 1..N arquivos OFX na PRIMEIRA carga. Usa o primeiro (ordenado
+ * alfabeticamente) como arquivo primário e os demais como anexos, que são
+ * mesclados por ordem cronológica com verificação de conflitos.
+ */
+function handleInitialFiles(files) {
+  const ofxFiles = files.filter((f) => f.name.toLowerCase().endsWith('.ofx'));
+  if (ofxFiles.length === 0) {
+    showError('Selecione pelo menos um arquivo com extensão .ofx');
+    return;
+  }
+  // Ordena por nome (ajuda quando o usuário nomeou "01-jan.ofx", "02-fev.ofx"...)
+  ofxFiles.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { numeric: true }));
+  const [primary, ...rest] = ofxFiles;
+  handleFile(primary, () => {
+    // Depois do primário estar carregado, mescla os demais sequencialmente
+    if (rest.length > 0) queueAppendFiles(rest);
+  });
+}
 
 resetBtn.addEventListener('click', () => {
   state.transactions = [];
@@ -1081,7 +1014,7 @@ function hideError() {
   errorMsg.classList.add('hidden');
 }
 
-function handleFile(file) {
+function handleFile(file, onDone) {
   hideError();
   const ext = file.name.toLowerCase().split('.').pop();
   if (ext !== 'ofx') {
@@ -1124,6 +1057,7 @@ function handleFile(file) {
       // Mostra botão de "Novo arquivo" no header
       resetBtn.classList.remove('hidden');
       resetBtn.classList.add('inline-flex');
+      if (typeof onDone === 'function') onDone();
     } catch (err) {
       console.error(err);
       showError('Erro ao processar arquivo: ' + err.message);
@@ -1131,6 +1065,97 @@ function handleFile(file) {
   };
   reader.onerror = () => showError('Não foi possível ler o arquivo.');
   reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Processa uma lista de arquivos OFX para anexar sequencialmente.
+ * Cada arquivo é parseado, ordenado por data (usa data da 1ª transação)
+ * e anexado via mergeSequentialOFX. Ao final, mostra um resumo consolidado.
+ */
+async function queueAppendFiles(files) {
+  const ofxFiles = files.filter((f) => f.name.toLowerCase().endsWith('.ofx'));
+  if (ofxFiles.length === 0) {
+    showAppendAlert('err', '<strong>Nenhum .ofx</strong> encontrado nos arquivos selecionados.');
+    return;
+  }
+
+  // Parse todos primeiro (em paralelo, mas mantendo a ordem original) para
+  // saber a data inicial de cada e ordenar cronologicamente antes de anexar.
+  const parsedList = [];
+  for (const file of ofxFiles) {
+    try {
+      const buf = await file.arrayBuffer();
+      const enc = detectOFXEncoding(buf);
+      const decoder = new TextDecoder(enc, { fatal: false });
+      const content = decoder.decode(buf);
+      const parsed = parseOFX(content);
+      if (!parsed.transactions.length) {
+        parsedList.push({ file, parsed, error: 'sem transações' });
+        continue;
+      }
+      const start = parsed.transactions.reduce(
+        (m, t) => (!m || (t.date && t.date < m)) ? t.date : m,
+        null
+      );
+      parsedList.push({ file, parsed, start });
+    } catch (err) {
+      parsedList.push({ file, error: err.message });
+    }
+  }
+
+  // Ordena por data inicial (ascendente) — arquivos mais antigos primeiro
+  parsedList.sort((a, b) => {
+    if (!a.start) return 1;
+    if (!b.start) return -1;
+    return a.start.getTime() - b.start.getTime();
+  });
+
+  // Verifica conflitos ENTRE os arquivos NOVOS antes de anexar
+  const interConflicts = [];
+  for (let i = 0; i < parsedList.length - 1; i++) {
+    const A = parsedList[i], B = parsedList[i + 1];
+    if (!A.parsed || !B.parsed || !A.start || !B.start) continue;
+    const aEnd = A.parsed.transactions.reduce((m, t) => (!m || (t.date && t.date > m)) ? t.date : m, null);
+    const bStart = B.start;
+    if (aEnd && bStart && aEnd > bStart) {
+      interConflicts.push(`<i>${escapeHtml(A.file.name)}</i> e <i>${escapeHtml(B.file.name)}</i> se sobrepõem`);
+    }
+  }
+
+  const summary = { added: 0, dup: 0, errors: [] };
+  for (const item of parsedList) {
+    if (item.error || !item.parsed) {
+      summary.errors.push(`${item.file.name}: ${item.error || 'parse falhou'}`);
+      continue;
+    }
+    if (state.appendedFiles >= state.MAX_APPENDED_FILES) {
+      summary.errors.push(`${item.file.name}: limite de ${state.MAX_APPENDED_FILES} arquivos atingido`);
+      continue;
+    }
+    const res = mergeSequentialOFX(item.parsed, item.file.name, { silent: true });
+    if (res && res.ok) {
+      summary.added += res.added;
+      summary.dup += res.duplicates;
+    } else if (res && res.error) {
+      summary.errors.push(`${item.file.name}: ${res.error}`);
+    }
+  }
+
+  // Alerta consolidado
+  const parts = [];
+  parts.push(`<strong>${ofxFiles.length} ${ofxFiles.length === 1 ? 'arquivo processado' : 'arquivos processados'}</strong>`);
+  parts.push(`<span class="mx-2">·</span>${summary.added} novas transações`);
+  if (summary.dup > 0) parts.push(`<span class="mx-2">·</span>${summary.dup} duplicadas ignoradas`);
+  parts.push(`<span class="mx-2">·</span><span class="text-xs text-gray-500 dark:text-slate-400">${state.appendedFiles}/${state.MAX_APPENDED_FILES} arquivos</span>`);
+  let extra = '';
+  if (interConflicts.length > 0) {
+    extra += `<div class="text-xs mt-2"><i class="fas fa-triangle-exclamation mr-1"></i>Conflito de datas: ${interConflicts.join('; ')}.</div>`;
+  }
+  if (summary.errors.length > 0) {
+    extra += `<div class="text-xs mt-2"><i class="fas fa-xmark mr-1"></i>Erros: ${summary.errors.map(escapeHtml).join('; ')}.</div>`;
+  }
+  const severity = (summary.errors.length > 0 || interConflicts.length > 0) ? 'warn' : 'ok';
+  showAppendAlert(severity, parts.join('') + extra);
 }
 
 /**
@@ -2366,23 +2391,24 @@ function renderTable() {
         ? `<span class="text-amber-800 dark:text-amber-200 font-medium" title="Contraparte da transação original">${escapeHtml(t.reversalRecipient)}</span>`
         : (t.isReversal ? '<span class="text-gray-400 dark:text-slate-500 italic text-xs">Não identificado</span>' : dash);
 
-      // Coluna E2E — EndToEndId BACEN (E<32>). SEMPRE preenchido:
-      //   - Se o OFX trouxe o E2E real  → cor verde/azul + rótulo REAL
-      //   - Se foi derivado por nós    → cor cinza + rótulo DERIVADO
+      // Coluna Referência — identificador do OFX (cascata real):
+      //   E2E > REFNUM > #Nº do MEMO > FITID.  Cor por origem.
       let txIdCell = dash;
-      if (t.endToEnd) {
-        const isReal = t.endToEndSource === 'real';
-        const badgeColor = isReal
-          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-          : 'bg-slate-500/20 text-slate-400 border-slate-500/40';
-        const badgeLabel = isReal ? 'E2E' : 'E2E*';
-        const badgeTitle = isReal
-          ? 'EndToEndId BACEN extraído diretamente do OFX (identificador universal do PIX)'
-          : 'EndToEndId BACEN DERIVADO (o OFX deste banco não exporta o E2E real; este identificador foi calculado a partir do ISPB do banco + data/hora + hash do FITID e é estável para a mesma transação)';
-        const valueColor = isReal ? 'text-emerald-200' : 'text-slate-300';
-        txIdCell = `<div class="max-w-[220px]" title="${escapeHtml(badgeTitle)}">
-          <span class="inline-block px-1 py-[1px] mb-0.5 text-[8.5px] font-sans font-semibold uppercase tracking-wide rounded border ${badgeColor}">${badgeLabel}</span>
-          <div class="text-[10.5px] ${valueColor} font-mono break-all leading-tight">${escapeHtml(t.endToEnd)}</div>
+      if (t.reference) {
+        const styles = {
+          e2e:     { label: 'E2E',    color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40', valueColor: 'text-emerald-200',
+                     title: 'EndToEndId BACEN (padrão E<32>) extraído diretamente do OFX — identificador universal PIX.' },
+          refnum:  { label: 'REFNUM', color: 'bg-blue-500/20 text-blue-300 border-blue-500/40',       valueColor: 'text-blue-200',
+                     title: 'REFNUM — tag <REFNUM> do próprio OFX. Referência oficial da transação fornecida pelo banco.' },
+          memoref: { label: '#Nº',    color: 'bg-purple-500/20 text-purple-300 border-purple-500/40', valueColor: 'text-purple-200',
+                     title: 'Nº de Transação extraído do MEMO — identificador interno do provedor OFX (ex.: "Transação #NNNNN").' },
+          fitid:   { label: 'FITID',  color: 'bg-slate-500/20 text-slate-300 border-slate-500/40',   valueColor: 'text-slate-200',
+                     title: 'FITID — ID interno do banco no OFX. Este OFX não fornece E2E BACEN nem REFNUM para esta transação.' },
+        };
+        const s = styles[t.referenceSource] || styles.fitid;
+        txIdCell = `<div class="max-w-[220px]" title="${escapeHtml(s.title)}">
+          <span class="inline-block px-1 py-[1px] mb-0.5 text-[8.5px] font-sans font-semibold uppercase tracking-wide rounded border ${s.color}">${s.label}</span>
+          <div class="text-[10.5px] ${s.valueColor} font-mono break-all leading-tight">${escapeHtml(t.reference)}</div>
         </div>`;
       }
 
@@ -2840,10 +2866,18 @@ const EXPORT_COLUMNS = [
     getter: (t) => (t.isBoleto ? 'Sim' : '') },
   { key: 'boletoReason', label: 'Tipo Boleto',           default: false,
     getter: (t) => (t.isBoleto ? (t.boletoReason || 'Boleto') : '') },
-  { key: 'txId',        label: 'TxId',                   default: true,
-    getter: (t) => t.txId || t.fitId || t.id || '' },
-  { key: 'endToEnd',    label: 'EndToEndId (PIX)',       default: false,
-    getter: (t) => t.endToEnd || '' },
+  { key: 'reference',   label: 'Referência OFX',         default: true,
+    getter: (t) => t.reference || t.txId || t.fitId || t.id || '' },
+  { key: 'referenceSource', label: 'Origem da Referência', default: true,
+    getter: (t) => {
+      const src = t.referenceSource || 'fitid';
+      return ({
+        e2e:     'E2E BACEN',
+        refnum:  'REFNUM (OFX)',
+        memoref: 'Nº do MEMO',
+        fitid:   'FITID (OFX)',
+      })[src] || src;
+    } },
   { key: 'amount',      label: 'Valor',                  default: true,
     getter: (t) => (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount) },
   { key: 'balanceBefore', label: 'Saldo Antes',          default: true,
@@ -3431,7 +3465,8 @@ function doExportPDF() {
     // "-" em vez de string vazia) para melhor legibilidade impressa.
     const v = c.getter(t);
     if (v === '' || v == null) {
-      if (c.key === 'counterparty' || c.key === 'txId' || c.key === 'endToEnd'
+      if (c.key === 'counterparty' || c.key === 'txId' || c.key === 'reference'
+          || c.key === 'referenceSource'
           || c.key === 'balanceBefore' || c.key === 'balanceAfter') return '-';
     }
     return v;
@@ -3447,7 +3482,8 @@ function doExportPDF() {
     isBoleto:          { cellWidth: 14 },
     boletoReason:      { cellWidth: 18 },
     txId:              { cellWidth: 22, font: 'courier', fontSize: 5.5 },
-    endToEnd:          { cellWidth: 30, font: 'courier', fontSize: 5.5 },
+    reference:         { cellWidth: 30, font: 'courier', fontSize: 5.5 },
+    referenceSource:   { cellWidth: 18, fontSize: 5.5 },
     amount:            { cellWidth: 20, halign: 'right', fontStyle: 'bold' },
     balanceBefore:     { cellWidth: 18, halign: 'right' },
     balanceAfter:      { cellWidth: 20, halign: 'right', fontStyle: 'bold' },
@@ -3812,47 +3848,17 @@ function initAppendOfx() {
   if (!btn || !input) return;
   btn.addEventListener('click', () => input.click());
   input.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) {
-      handleAppendFile(e.target.files[0]);
-      input.value = ''; // permite reanexar o mesmo arquivo
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0) {
+      if (!state.transactions.length) {
+        showAppendAlert('err', 'Nenhum extrato foi carregado ainda.');
+        input.value = '';
+        return;
+      }
+      queueAppendFiles(files);
+      input.value = ''; // permite reanexar o mesmo(s) arquivo(s)
     }
   });
-}
-
-function handleAppendFile(file) {
-  const ext = file.name.toLowerCase().split('.').pop();
-  if (ext !== 'ofx') {
-    showAppendAlert('err', '<strong>Arquivo inválido</strong>: precisa ser .ofx');
-    return;
-  }
-  if (!state.transactions.length) {
-    showAppendAlert('err', 'Nenhum extrato foi carregado ainda.');
-    return;
-  }
-  // Limite de 20 arquivos anexados (o 1º carregado já conta).
-  if (state.appendedFiles >= state.MAX_APPENDED_FILES) {
-    showAppendAlert('err',
-      `<strong>Limite atingido</strong>: você já anexou ${state.appendedFiles} arquivos. ` +
-      `O máximo permitido é ${state.MAX_APPENDED_FILES}.`
-    );
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    try {
-      const buf = ev.target.result;
-      const enc = detectOFXEncoding(buf);
-      const decoder = new TextDecoder(enc, { fatal: false });
-      const content = decoder.decode(buf);
-      const parsed = parseOFX(content);
-      mergeSequentialOFX(parsed, file.name);
-    } catch (err) {
-      console.error(err);
-      showAppendAlert('err', 'Erro ao processar arquivo: ' + err.message);
-    }
-  };
-  reader.onerror = () => showAppendAlert('err', 'Não foi possível ler o arquivo.');
-  reader.readAsArrayBuffer(file);
 }
 
 /**
@@ -3862,19 +3868,20 @@ function handleAppendFile(file) {
  *  - Conta diferente: ACCTID diferente → erro
  *  - Sequencial perfeito: sem gap nem sobreposição → sucesso
  */
-function mergeSequentialOFX(parsed, filename) {
+function mergeSequentialOFX(parsed, filename, opts = {}) {
+  const silent = opts.silent === true;
   const { accountInfo: newInfo, transactions: newTxns } = parsed;
 
   // Valida se é a mesma conta (ACCTID)
   const currentAcct = String(state.accountInfo.accountId || '').trim();
   const newAcct = String(newInfo.accountId || '').trim();
   if (currentAcct && newAcct && currentAcct !== newAcct) {
-    showAppendAlert('err',
+    const msg =
       `<strong>Contas diferentes</strong>: o extrato atual é da conta <code>${escapeHtml(currentAcct)}</code> ` +
       `e o novo é da conta <code>${escapeHtml(newAcct)}</code>. ` +
-      `Só é possível anexar extratos da MESMA conta.`
-    );
-    return;
+      `Só é possível anexar extratos da MESMA conta.`;
+    if (!silent) showAppendAlert('err', msg);
+    return { ok: false, error: `Conta diferente (${newAcct} vs ${currentAcct})` };
   }
 
   // Ranges reais (por transação) — mais confiável que DTSTART/DTEND
@@ -3884,8 +3891,8 @@ function mergeSequentialOFX(parsed, filename) {
   const newEnd = newTxns.reduce((max, t) => (!max || (t.date && t.date > max)) ? t.date : max, null);
 
   if (!newStart || !newEnd) {
-    showAppendAlert('err', 'O novo extrato não contém transações com data válida.');
-    return;
+    if (!silent) showAppendAlert('err', 'O novo extrato não contém transações com data válida.');
+    return { ok: false, error: 'sem transações válidas' };
   }
 
   // Detecta relação temporal entre as duas janelas
@@ -3933,6 +3940,7 @@ function mergeSequentialOFX(parsed, filename) {
   const addedCount = combined.length - state.transactions.length;
   const duplicates = newTxns.length - addedCount;
 
+  const previousCount = state.transactions.length;
   state.transactions = combined;
   state.accountInfo = mergedInfo;
   state.filtered = [...combined];
@@ -3951,10 +3959,50 @@ function mergeSequentialOFX(parsed, filename) {
     analysisType: analysis.type,
   });
 
+  // ── AUTO-EXPANSÃO DOS FILTROS DE DATA ───────────────────────────────
+  // Quando o novo arquivo estende o range para trás ou para frente, as
+  // transações do arquivo novo ficariam FORA do filterStart/filterEnd
+  // e não apareceriam na tabela. Se o filtro atual estava batendo com o
+  // range OLD (usuário não customizou), estendemos automaticamente.
+  const oldFilterStart = parseFilterDateTime(filterStart.value);
+  const oldFilterEnd = parseFilterDateTime(filterEnd.value);
+  // Considera "não customizado" se o filtro bate (com tolerância de 5 min)
+  // com o início/fim das transações antes do merge.
+  const TOL = 5 * 60 * 1000;
+  const closeTo = (a, b) => a && b && Math.abs(a.getTime() - b.getTime()) < TOL;
+  const filterMatchesOldStart = curStart && oldFilterStart && (
+    closeTo(oldFilterStart, curStart) ||
+    // ou o filtro é meia-noite do dia curStart (padrão inicial)
+    (oldFilterStart.getHours() === 0 && oldFilterStart.getMinutes() === 0 &&
+     oldFilterStart.toDateString() === new Date(curStart).toDateString())
+  );
+  const filterMatchesOldEnd = curEnd && oldFilterEnd && (
+    closeTo(oldFilterEnd, curEnd) ||
+    (oldFilterEnd.getHours() === 23 && oldFilterEnd.getMinutes() === 59 &&
+     oldFilterEnd.toDateString() === new Date(curEnd).toDateString())
+  );
+  // Se o novo arquivo empurra o início pra trás e o filtro batia com o antigo,
+  // ajusta pro novo início. Idem para o fim.
+  if (newStart < curStart && (filterMatchesOldStart || !oldFilterStart)) {
+    const s = new Date(newStart);
+    s.setHours(0, 0, 0, 0);
+    filterStart.value = formatDateTimeBR(s);
+    if (flatpickrInstances.start) flatpickrInstances.start.setDate(s, false);
+  }
+  if (newEnd > curEnd && (filterMatchesOldEnd || !oldFilterEnd)) {
+    const e = new Date(newEnd);
+    e.setHours(23, 59, 0, 0);
+    filterEnd.value = formatDateTimeBR(e);
+    if (flatpickrInstances.end) flatpickrInstances.end.setDate(e, false);
+  }
+
   // Reabre o dashboard com os dados mesclados (NÃO é primary — preserva filtros)
   renderDashboard({ isPrimary: false });
 
-  // Monta o alerta com o resumo
+  // Monta o alerta com o resumo (silent=true pula essa parte — quem chamou monta próprio)
+  if (silent) {
+    return { ok: true, added: addedCount, duplicates, analysis };
+  }
   const parts = [];
   parts.push(`<strong>Arquivo anexado</strong>: ${escapeHtml(filename)}`);
   parts.push(`<span class="mx-2">·</span>`);
@@ -3995,6 +4043,7 @@ function mergeSequentialOFX(parsed, filename) {
   }
 
   showAppendAlert(severity, parts.join('') + extra);
+  return { ok: true, added: addedCount, duplicates, analysis };
 }
 
 /**

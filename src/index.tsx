@@ -49,19 +49,17 @@ app.get('/', (c) => {
               Envie seu extrato bancário
             </h2>
             <p class="text-gray-600 dark:text-slate-300 mb-4 text-sm sm:text-base">
-              Arraste e solte o arquivo <strong>.ofx</strong> aqui ou clique para
-              selecionar
+              Arraste e solte um ou mais arquivos <strong>.ofx</strong> aqui ou clique para selecionar
             </p>
-            <input type="file" id="file-input" accept=".ofx,.OFX" class="hidden" />
+            <input type="file" id="file-input" accept=".ofx,.OFX" class="hidden" multiple />
             <button
               id="select-file-btn"
               class="bg-blue-600 hover:bg-blue-700 text-white px-4 sm:px-6 py-2 sm:py-3 rounded-lg font-medium transition text-sm sm:text-base"
             >
-              <i class="fas fa-folder-open mr-2"></i>Selecionar Arquivo OFX
+              <i class="fas fa-folder-open mr-2"></i>Selecionar arquivos OFX
             </button>
             <p class="text-xs text-gray-500 dark:text-slate-400 mt-4">
-              Formatos suportados: OFX (Open Financial Exchange) - padrão de extratos
-              bancários brasileiros
+              Você pode selecionar <strong>vários arquivos de uma vez</strong> — eles serão mesclados por ordem cronológica, com detecção de sobreposição/conflito.
             </p>
           </div>
 
@@ -76,24 +74,26 @@ app.get('/', (c) => {
 
         {/* Dashboard */}
         <section id="dashboard" class="hidden">
-          {/* Botão para carregar segundo OFX sequencial */}
+          {/* Botão para anexar mais OFX (multi-file) */}
           <div id="append-ofx-wrapper" class="mb-4 sm:mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-slate-800/70 dark:to-slate-800/40 border border-blue-200 dark:border-blue-800/60 rounded-xl p-4 flex items-center justify-between gap-3 flex-wrap">
             <div class="flex items-center gap-3">
               <i class="fas fa-layer-group text-blue-600 dark:text-blue-400 text-xl"></i>
               <div>
-                <div class="text-sm font-semibold text-gray-800 dark:text-slate-100">Anexar OFX sequencial</div>
-                <div class="text-xs text-gray-600 dark:text-slate-400">Junte outro extrato que continua o período (ex.: 1ª e 2ª quinzena)</div>
+                <div class="text-sm font-semibold text-gray-800 dark:text-slate-100">Anexar mais OFX</div>
+                <div class="text-xs text-gray-600 dark:text-slate-400">
+                  Junte outros extratos (períodos anteriores ou seguintes). Aceita <strong>vários arquivos por vez</strong>; datas fora de ordem são mescladas automaticamente e conflitos são detectados.
+                </div>
               </div>
             </div>
             <div class="flex items-center gap-2">
-              <input type="file" id="append-file-input" accept=".ofx,.OFX" class="hidden" />
+              <input type="file" id="append-file-input" accept=".ofx,.OFX" class="hidden" multiple />
               <button
                 type="button"
                 id="append-file-btn"
                 class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition inline-flex items-center gap-2"
               >
                 <i class="fas fa-plus"></i>
-                <span>Adicionar próximo OFX</span>
+                <span>Adicionar OFX</span>
               </button>
             </div>
           </div>
@@ -633,7 +633,7 @@ app.get('/', (c) => {
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Descrição</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Conta Destino/Origem</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="Nome do destinatário original da transação estornada/devolvida">Destinatário Estorno</th>
-                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="E2E = EndToEndId BACEN (E + ISPB + data + hash) — identificador universal do PIX que aparece no comprovante como 'ID da transação' (Nubank/Itaú), 'Autenticação' (InfoPago/Itaú) ou 'Número de Controle' (Bradesco).">E2E</th>
+                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="Referência real capturada do arquivo OFX, em cascata: (1) E2E BACEN se o banco o exportar, (2) REFNUM do OFX, (3) Nº do MEMO 'Transação #NNNNN', (4) FITID. O padrão OFX brasileiro NÃO inclui o E2E BACEN — mostramos o identificador REAL que o OFX fornece, com badge indicando a origem.">Referência</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Valor</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Antes</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Após</th>
