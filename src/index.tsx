@@ -444,11 +444,26 @@ app.get('/', (c) => {
                     class="border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   >
                     <option value="all">Todos (com e sem estornos)</option>
-                    <option value="only">Somente estornos/devoluções</option>
-                    <option value="exclude">Ocultar estornos/devoluções</option>
+                    <option value="only">Somente estornos</option>
+                    <option value="exclude">Ocultar estornos</option>
                   </select>
                   <span id="reversal-count-badge" class="text-xs bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200 px-2 py-1 rounded-full">
                     <i class="fas fa-undo mr-1"></i><span id="reversal-count">0</span>
+                  </span>
+                </label>
+              </div>
+              <div id="devolucao-filter-wrapper" class="hidden">
+                <label class="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-700 dark:text-slate-200">
+                  <select
+                    id="filter-devolucao"
+                    class="border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="all">Todos (com e sem devoluções PIX)</option>
+                    <option value="only">Somente devoluções PIX</option>
+                    <option value="exclude">Ocultar devoluções PIX</option>
+                  </select>
+                  <span id="devolucao-count-badge" class="text-xs bg-purple-100 dark:bg-purple-900 text-purple-800 dark:text-purple-200 px-2 py-1 rounded-full">
+                    <i class="fas fa-rotate-left mr-1"></i><span id="devolucao-count">0</span>
                   </span>
                 </label>
               </div>
@@ -474,18 +489,6 @@ app.get('/', (c) => {
                   class="bg-gray-100 dark:bg-slate-700 hover:bg-gray-200 dark:hover:bg-slate-600 text-gray-700 dark:text-slate-200 px-3 sm:px-4 py-2 rounded-lg text-sm font-medium"
                 >
                   <i class="fas fa-eraser mr-1"></i>Limpar
-                </button>
-                <button
-                  id="export-csv"
-                  class="bg-green-600 hover:bg-green-700 text-white px-3 sm:px-4 py-2 rounded-lg text-sm font-medium"
-                >
-                  <i class="fas fa-file-csv mr-1"></i>CSV
-                </button>
-                <button
-                  id="export-pdf"
-                  class="bg-red-600 hover:bg-red-700 text-white px-3 sm:px-4 py-2 rounded-lg text-sm font-medium"
-                >
-                  <i class="fas fa-file-pdf mr-1"></i>PDF
                 </button>
               </div>
             </div>
@@ -540,8 +543,8 @@ app.get('/', (c) => {
             <i class="fas fa-grip-vertical"></i>
             <span class="block-drag-label">Transações</span>
           </div>
-          <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md overflow-hidden">
-            <div class="p-4 sm:p-6 border-b border-gray-200 dark:border-slate-700 flex items-center justify-between flex-wrap gap-3">
+          <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md">
+            <div class="p-4 sm:p-6 border-b border-gray-200 dark:border-slate-700 flex items-center justify-between flex-wrap gap-3 rounded-t-xl">
               <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100">
                 <i class="fas fa-list-ul text-blue-600 dark:text-blue-400 mr-2"></i>Transações
                 <span
@@ -575,6 +578,20 @@ app.get('/', (c) => {
                   <option value="450">450</option>
                   <option value="500">500</option>
                 </select>
+                <button
+                  id="export-csv"
+                  class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-sm font-medium"
+                  title="Exportar transações filtradas para CSV"
+                >
+                  <i class="fas fa-file-csv mr-1"></i>CSV
+                </button>
+                <button
+                  id="export-pdf"
+                  class="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-sm font-medium"
+                  title="Exportar transações filtradas para PDF"
+                >
+                  <i class="fas fa-file-pdf mr-1"></i>PDF
+                </button>
               </div>
             </div>
 

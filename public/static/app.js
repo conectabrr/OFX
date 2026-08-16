@@ -13,6 +13,9 @@ const state = {
   counterpartyList: [],
   selectedIds: new Set(),   // FITIDs selecionados (checkboxes)
   reversalOnlyMode: false,  // Botão exclusivo: mostra apenas transações de estorno
+  // Anexar OFX sequencial: até 20 arquivos anexados (o 1º carregado conta como 1).
+  appendedFiles: 1,
+  MAX_APPENDED_FILES: 20,
 };
 
 // ============================================================
@@ -28,10 +31,10 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!calcValue) return;
 
   const hints = {
-    of: 'Ex.: 10% de R$ 10.000,00 = R$ 1.000,00',
-    add: 'Ex.: R$ 10.000,00 + 10% de acréscimo = R$ 11.000,00',
-    sub: 'Ex.: R$ 10.000,00 - 10% de desconto = R$ 9.000,00',
-    ratio: 'Ex.: R$ 200,00 representa 20% de R$ 1.000,00',
+    of: 'Exemplo: <b>10%</b> de <b>R$ 10.000,00</b> = <b class="text-blue-600 dark:text-blue-300">R$ 1.000,00</b>',
+    add: 'Exemplo: <b>R$ 10.000,00</b> + <b>10%</b> de acréscimo = <b class="text-emerald-600 dark:text-emerald-300">R$ 11.000,00</b>',
+    sub: 'Exemplo: <b>R$ 10.000,00</b> − <b>10%</b> de desconto = <b class="text-amber-600 dark:text-amber-300">R$ 9.000,00</b>',
+    ratio: 'Exemplo: <b>R$ 200,00</b> representa <b class="text-blue-600 dark:text-blue-300">20%</b> de <b>R$ 1.000,00</b>',
   };
 
   const labels = {
@@ -49,7 +52,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const op = calcOp.value;
 
     calcSecondLabel.textContent = labels[op];
-    calcHint.textContent = hints[op];
+    calcHint.innerHTML = hints[op];
 
     // Detalhe extra só faz sentido em ratio; oculta nos outros modos.
     if (calcDetail && op !== 'ratio') {
@@ -222,6 +225,10 @@ function parseOFX(content) {
     // (usado para consolidar contrapartes por NOME em vez de por identificador)
     const isPix = detectPix(trnType, memo, name);
 
+    // Distingue "Devolução PIX" de "Estorno" genérico.
+    // Devolução PIX é sub-categoria: sempre implica isReversal=true.
+    const isDevolucao = isReversal ? detectIsDevolucao(trnType, memo, name, isPix) : false;
+
     // Descrição consolidada
     let description = name || memo;
     if (name && memo && name !== memo) {
@@ -270,10 +277,30 @@ function parseOFX(content) {
       reversalReason = detectReversalReason(memo, name, correctFitId);
     }
 
-    // TxId final = REFNUM. Se não houver REFNUM, cai para FITID (que
-    // pelo menos é único no arquivo). Nunca usa "#NNNNN" como TxId
-    // (isso é referência interna, não o ID do comprovante).
-    const txId = refNum || fitId || '';
+    // ------------------------------------------------------------------
+    // TxId final — resolvido em ordem de PRIORIDADE:
+    //
+    //   1º REFNUM (quando existe) — geralmente é o ID mais autoritativo
+    //      da instituição. Ex.: "SE000372801790KKIKHDO4RAUII4PLGYLM",
+    //      "CIELO202608...", "mpqrinter171144758847". No OFX InfoPago
+    //      só ~7% das transações têm REFNUM.
+    //
+    //   2º "#NNNNN" do MEMO — é o "ID da transação" que aparece no
+    //      COMPROVANTE do app Nubank/InfoPago para as ~93% restantes.
+    //      Sem ele, essas transações ficariam sem TxId identificável.
+    //
+    //   3º FITID — último recurso (é apenas dedup do OFX).
+    //
+    // Esta lógica cobre TODAS as 476 transações do OFX de exemplo, não
+    // só as 18 com REFNUM.
+    // ------------------------------------------------------------------
+    let txId = refNum;
+    if (!txId && originalTxRef) {
+      // Prefixa com "#" para deixar visualmente claro que veio do MEMO
+      // (é numérico, ao contrário do REFNUM que é alfanumérico).
+      txId = '#' + originalTxRef;
+    }
+    if (!txId) txId = fitId || '';
 
     // EndToEnd = extrair padrão E\d{31,32} de qualquer campo textual.
     // Se o REFNUM já for um E2E (raro), aproveita. Senão, tenta MEMO/NAME.
@@ -300,6 +327,7 @@ function parseOFX(content) {
       counterpartyBranch: counterparty.branch,
       counterpartyName: counterparty.name,
       isReversal,                              // boolean: é estorno/devolução?
+      isDevolucao,                             // boolean: é especificamente uma Devolução PIX?
       reversalReason,                          // ex: "Estorno", "Devolução", "Reembolso"
       reversalRecipient,                       // Nome do destinatário original do débito
       correctFitId,                            // FITID da transação sendo corrigida
@@ -483,6 +511,30 @@ function detectReversal(trnType, memo, name, correctFitId, correctAction) {
     'ressarcimento',
   ];
   return keywords.some((kw) => text.includes(kw));
+}
+
+/**
+ * Distingue "Devolução PIX" de "Estorno" genérico.
+ *
+ * Regra:
+ *   - Devolução PIX = transação PIX cujo texto contém "DEVOLU*" ou "DEVOLVID*"
+ *     (o BACEN chama de "devolução" a operação em que o valor é retornado
+ *      via mecanismo específico do PIX — ex.: MED, devolução por engano)
+ *   - Estorno = qualquer outra reversão (chargeback, cancelamento de compra,
+ *     estorno de tarifa, reembolso, correção OFX, etc.)
+ *
+ * Só é chamada quando isReversal já é true.
+ */
+function detectIsDevolucao(trnType, memo, name, isPix) {
+  const text = normalizeText(`${memo} ${name}`);
+  const hasDevolucaoKeyword = /devolucao|devolvid[oa]/.test(text);
+  if (!hasDevolucaoKeyword) return false;
+  // Se tem palavra "devolução" E é PIX, é uma Devolução PIX
+  if (isPix) return true;
+  // Alguns bancos usam "devolução" mesmo fora de PIX (ex: devolução de TED).
+  // Aceita se o TRNTYPE for XFER/CREDIT e não houver palavra "estorno".
+  if (/estorno/.test(text)) return false;
+  return true;
 }
 
 function detectReversalReason(memo, name, correctFitId) {
@@ -939,6 +991,7 @@ function handleFile(file) {
       state.accountInfo = accountInfo;
       state.transactions = transactions;
       state.filtered = [...transactions];
+      state.appendedFiles = 1;  // reset contador ao carregar novo primário
       renderDashboard();
       uploadSection.classList.add('hidden');
       dashboard.classList.remove('hidden');
@@ -1045,6 +1098,7 @@ function renderDashboard() {
   setupFilters();
   updateReversalUI();
   updateBoletoUI();
+  updateDevolucaoUI();
   applyFilters();
 }
 
@@ -1092,6 +1146,21 @@ function updateBoletoUI() {
   const wrapper = document.getElementById('boleto-filter-wrapper');
   const countEl = document.getElementById('boleto-count');
   const total = state.transactions.filter((t) => t.isBoleto).length;
+  if (countEl) countEl.textContent = String(total);
+  if (wrapper) {
+    if (total > 0) wrapper.classList.remove('hidden');
+    else wrapper.classList.add('hidden');
+  }
+}
+
+/**
+ * Mostra/esconde o filtro de Devolução PIX. Só aparece se houver pelo
+ * menos 1 devolução PIX detectada no arquivo.
+ */
+function updateDevolucaoUI() {
+  const wrapper = document.getElementById('devolucao-filter-wrapper');
+  const countEl = document.getElementById('devolucao-count');
+  const total = state.transactions.filter((t) => t.isDevolucao).length;
   if (countEl) countEl.textContent = String(total);
   if (wrapper) {
     if (total > 0) wrapper.classList.remove('hidden');
@@ -1281,6 +1350,15 @@ function setupFilters() {
     });
   }
 
+  // Filtro devolução PIX (dropdown, separado de estorno)
+  const filterDevolucao = document.getElementById('filter-devolucao');
+  if (filterDevolucao) {
+    filterDevolucao.addEventListener('change', () => {
+      state.currentPage = 1;
+      applyFilters();
+    });
+  }
+
   // Regra de coer\u00eancia: quando o TIPO muda, valida se o filtro de contraparte
   // ainda \u00e9 v\u00e1lido no novo escopo (n\u00e3o pode divergir).
   filterType.addEventListener('change', () => {
@@ -1328,6 +1406,8 @@ function setupFilters() {
     if (filterReversal) filterReversal.value = 'all';
     const filterBoleto = document.getElementById('filter-boleto');
     if (filterBoleto) filterBoleto.value = 'all';
+    const filterDevolucao = document.getElementById('filter-devolucao');
+    if (filterDevolucao) filterDevolucao.value = 'all';
     updateCounterpartyClearBtn();
     state.currentPage = 1;
     applyFilters();
@@ -1825,12 +1905,21 @@ function applyFilters() {
   if (minV !== null) result = result.filter((t) => t.absAmount >= minV);
   if (maxV !== null) result = result.filter((t) => t.absAmount <= maxV);
 
-  // Filtro por estorno/devolução (dropdown do painel de filtros)
+  // Filtro por ESTORNO propriamente dito — só reversões que NÃO são
+  // devoluções PIX. Devolução PIX tem filtro próprio abaixo.
   const filterReversalEl = document.getElementById('filter-reversal');
   if (filterReversalEl) {
     const rvMode = filterReversalEl.value;
-    if (rvMode === 'only') result = result.filter((t) => t.isReversal);
-    else if (rvMode === 'exclude') result = result.filter((t) => !t.isReversal);
+    if (rvMode === 'only') result = result.filter((t) => t.isReversal && !t.isDevolucao);
+    else if (rvMode === 'exclude') result = result.filter((t) => !(t.isReversal && !t.isDevolucao));
+  }
+
+  // Filtro por DEVOLUÇÃO PIX — separada de estorno.
+  const filterDevolucaoEl = document.getElementById('filter-devolucao');
+  if (filterDevolucaoEl) {
+    const dvMode = filterDevolucaoEl.value;
+    if (dvMode === 'only') result = result.filter((t) => t.isDevolucao);
+    else if (dvMode === 'exclude') result = result.filter((t) => !t.isDevolucao);
   }
 
   // Filtro por pagamento de boleto (dropdown do painel de filtros)
@@ -1926,13 +2015,18 @@ function renderTable() {
       const cpDisplay = t.counterparty
         ? `<span class="text-gray-400 dark:text-slate-500 mr-1">${cpLabel}:</span>${escapeHtml(t.counterparty)}`
         : dash;
-      // Badge de estorno simplificado: só ícone + "Estorno" (motivo detalhado
-      // removido a pedido do usuário — a intenção já fica clara pelo ícone).
-      const reversalBadge = t.isReversal
-        ? `<span class="badge badge-reversal ml-1" title="Estorno / Devolução"><i class="fas fa-undo mr-1"></i>Estorno</span>`
-        : '';
+      // Badges do Tipo: menores (badge-sm) e empilhados verticalmente
+      // quando há mais de um (crédito/débito + estorno/devolução + boleto).
+      // Devolução PIX tem badge próprio (diferente de Estorno genérico).
+      let devolucaoBadge = '';
+      let reversalBadge = '';
+      if (t.isDevolucao) {
+        devolucaoBadge = `<span class="badge badge-sm badge-devolucao" title="Devolução PIX"><i class="fas fa-rotate-left mr-1"></i>Devolução</span>`;
+      } else if (t.isReversal) {
+        reversalBadge = `<span class="badge badge-sm badge-reversal" title="Estorno"><i class="fas fa-undo mr-1"></i>Estorno</span>`;
+      }
       const boletoBadge = t.isBoleto
-        ? `<span class="badge badge-boleto ml-1" title="${escapeHtml(t.boletoReason || 'Boleto')}"><i class="fas fa-barcode mr-1"></i>${escapeHtml(t.boletoReason || 'Boleto')}</span>`
+        ? `<span class="badge badge-sm badge-boleto" title="${escapeHtml(t.boletoReason || 'Boleto')}"><i class="fas fa-barcode mr-1"></i>${escapeHtml(t.boletoReason || 'Boleto')}</span>`
         : '';
       const isSelected = state.selectedIds.has(t.id);
       const rowClass = isSelected
@@ -1984,14 +2078,17 @@ function renderTable() {
           </td>
           <td class="px-3 py-3 text-sm text-gray-700 dark:text-slate-300 whitespace-nowrap text-center align-middle">${formatDateTime(t.date)}</td>
           <td class="px-3 py-3 whitespace-nowrap text-center align-middle">
-            <span class="badge ${badgeClass}">
-              <i class="fas fa-${t.type === 'credit' ? 'arrow-up' : 'arrow-down'} mr-1"></i>
-              ${getTrnTypeLabel(t.trnType)}
-            </span>
-            ${reversalBadge}
-            ${boletoBadge}
+            <div class="tipo-badges">
+              <span class="badge badge-sm ${badgeClass}">
+                <i class="fas fa-${t.type === 'credit' ? 'arrow-up' : 'arrow-down'} mr-1"></i>
+                ${getTrnTypeLabel(t.trnType)}
+              </span>
+              ${devolucaoBadge}
+              ${reversalBadge}
+              ${boletoBadge}
+            </div>
           </td>
-          <td class="px-3 py-3 text-sm text-gray-800 dark:text-slate-200 max-w-md text-center align-middle">${escapeHtml(t.description)}</td>
+          <td class="description-cell px-3 py-3 text-gray-800 dark:text-slate-200 max-w-md text-center align-middle">${escapeHtml(t.description)}</td>
           <td class="px-3 py-3 text-sm text-gray-700 dark:text-slate-300 text-center align-middle">${cpDisplay}</td>
           <td class="px-3 py-3 text-sm text-center align-middle">${reversalRecipientCell}</td>
           <td class="px-3 py-3 text-center align-middle">${txIdCell}</td>
@@ -2013,11 +2110,15 @@ function renderTable() {
         const valueClass = t.type === 'credit' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400';
         const sign = t.type === 'credit' ? '+' : '-';
         const cpLabel = t.type === 'credit' ? 'De' : 'Para';
-        const reversalBadge = t.isReversal
-          ? `<span class="badge badge-reversal ml-1"><i class="fas fa-undo mr-1"></i>Estorno</span>`
-          : '';
+        let reversalBadge = '';
+        let devolucaoBadge = '';
+        if (t.isDevolucao) {
+          devolucaoBadge = `<span class="badge badge-sm badge-devolucao ml-1"><i class="fas fa-rotate-left mr-1"></i>Devolução</span>`;
+        } else if (t.isReversal) {
+          reversalBadge = `<span class="badge badge-sm badge-reversal ml-1"><i class="fas fa-undo mr-1"></i>Estorno</span>`;
+        }
         const boletoBadge = t.isBoleto
-          ? `<span class="badge badge-boleto ml-1"><i class="fas fa-barcode mr-1"></i>${escapeHtml(t.boletoReason || 'Boleto')}</span>`
+          ? `<span class="badge badge-sm badge-boleto ml-1"><i class="fas fa-barcode mr-1"></i>${escapeHtml(t.boletoReason || 'Boleto')}</span>`
           : '';
         const isSelected = state.selectedIds.has(t.id);
         const cardClass = isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : '';
@@ -2046,10 +2147,11 @@ function renderTable() {
               <label class="flex items-start gap-2 flex-1 cursor-pointer">
                 <input type="checkbox" class="row-checkbox mt-1 rounded border-gray-300 dark:border-slate-500 text-blue-600 focus:ring-blue-500" data-id="${escapeHtml(t.id)}" ${isSelected ? 'checked' : ''} />
                 <div class="flex items-center flex-wrap gap-1 flex-1">
-                  <span class="badge ${badgeClass}">
+                  <span class="badge badge-sm ${badgeClass}">
                     <i class="fas fa-${t.type === 'credit' ? 'arrow-up' : 'arrow-down'} mr-1"></i>
                     ${getTrnTypeLabel(t.trnType)}
                   </span>
+                  ${devolucaoBadge}
                   ${reversalBadge}
                   ${boletoBadge}
                 </div>
@@ -2394,45 +2496,64 @@ function renderChart() {
 // EXPORTAÇÃO - MODAL DE PRÉVIA
 // ============================================================
 /**
- * Colunas exportadas em CSV/PDF. Centralizadas para consistência entre
- * a prévia do modal e o arquivo final.
+ * Colunas exportadas em CSV/PDF. Cada entry:
+ *   { key, label, getter, default: boolean }
+ * O usuário pode desmarcar colunas indesejadas no modal de prévia.
  */
 const EXPORT_COLUMNS = [
-  'Data/Hora',
-  'Tipo',
-  'Descrição',
-  'Conta Destino/Origem',
-  'Destinatário Estorno',
-  'Boleto',
-  'Tipo Boleto',
-  'TxId',
-  'EndToEndId (PIX)',
-  'Valor',
-  'Saldo Antes',
-  'Saldo Após',
+  { key: 'date',        label: 'Data/Hora',              default: true,
+    getter: (t) => formatDateTime(t.date) },
+  { key: 'type',        label: 'Tipo',                   default: true,
+    getter: (t) => {
+      const tipoBase = getTrnTypeLabel(t.trnType);
+      const tipoFlags = [];
+      if (t.isDevolucao) tipoFlags.push('Devolução PIX');
+      else if (t.isReversal) tipoFlags.push('Estorno');
+      if (t.isBoleto) tipoFlags.push('Boleto');
+      return tipoFlags.length ? `${tipoBase} (${tipoFlags.join(', ')})` : tipoBase;
+    } },
+  { key: 'description', label: 'Descrição',              default: true,
+    getter: (t) => t.description || '' },
+  { key: 'counterparty', label: 'Conta Destino/Origem',   default: true,
+    getter: (t) => t.counterparty || '' },
+  { key: 'reversalRecipient', label: 'Destinatário Estorno', default: true,
+    getter: (t) => (t.isReversal ? (t.reversalRecipient || '') : '') },
+  { key: 'isBoleto',    label: 'Boleto',                 default: false,
+    getter: (t) => (t.isBoleto ? 'Sim' : '') },
+  { key: 'boletoReason', label: 'Tipo Boleto',           default: false,
+    getter: (t) => (t.isBoleto ? (t.boletoReason || 'Boleto') : '') },
+  { key: 'txId',        label: 'TxId',                   default: true,
+    getter: (t) => t.txId || t.fitId || t.id || '' },
+  { key: 'endToEnd',    label: 'EndToEndId (PIX)',       default: false,
+    getter: (t) => t.endToEnd || '' },
+  { key: 'amount',      label: 'Valor',                  default: true,
+    getter: (t) => (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount) },
+  { key: 'balanceBefore', label: 'Saldo Antes',          default: true,
+    getter: (t) => (t.balanceBefore != null ? formatCurrency(t.balanceBefore) : '') },
+  { key: 'balanceAfter', label: 'Saldo Após',            default: true,
+    getter: (t) => (t.balanceAfter != null ? formatCurrency(t.balanceAfter) : '') },
 ];
 
-/** Monta uma linha de exportação a partir de uma transação */
+// Set com as chaves das colunas atualmente selecionadas para exportação.
+// Inicializado com todas as `default: true` na primeira abertura do modal.
+let exportSelectedColumns = null;
+
+function ensureExportColumnsInitialized() {
+  if (exportSelectedColumns) return;
+  exportSelectedColumns = new Set(
+    EXPORT_COLUMNS.filter((c) => c.default).map((c) => c.key)
+  );
+}
+
+/** Retorna o subset de EXPORT_COLUMNS que está selecionado (mantém ordem). */
+function getActiveExportColumns() {
+  ensureExportColumnsInitialized();
+  return EXPORT_COLUMNS.filter((c) => exportSelectedColumns.has(c.key));
+}
+
+/** Monta uma linha de exportação (apenas colunas selecionadas). */
 function buildExportRow(t) {
-  const tipoBase = getTrnTypeLabel(t.trnType);
-  const tipoFlags = [];
-  if (t.isReversal) tipoFlags.push('Estorno');
-  if (t.isBoleto) tipoFlags.push('Boleto');
-  const tipoStr = tipoFlags.length ? `${tipoBase} (${tipoFlags.join(', ')})` : tipoBase;
-  return [
-    formatDateTime(t.date),
-    tipoStr,
-    t.description || '',
-    t.counterparty || '',
-    t.isReversal ? (t.reversalRecipient || '') : '',
-    t.isBoleto ? 'Sim' : '',
-    t.isBoleto ? (t.boletoReason || 'Boleto') : '',
-    t.txId || t.fitId || t.id || '',
-    t.endToEnd || '',
-    (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount),
-    t.balanceBefore != null ? formatCurrency(t.balanceBefore) : '',
-    t.balanceAfter != null ? formatCurrency(t.balanceAfter) : '',
-  ];
+  return getActiveExportColumns().map((c) => c.getter(t));
 }
 
 /** Retorna a fonte de dados para exportação: seleção OU tudo que está filtrado */
@@ -2526,24 +2647,77 @@ function openExportPreview(format) {
     </div>
   `;
 
-  const tableRows = preview
-    .map((t) => {
-      const row = buildExportRow(t);
+  ensureExportColumnsInitialized();
+
+  // Painel de seleção de colunas — permite ao usuário desmarcar antes
+  // de exportar. As mudanças re-renderizam a tabela de prévia dinamicamente.
+  const columnsSelectorHtml = `
+    <div class="mb-3 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg">
+      <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <div class="font-semibold text-emerald-800 dark:text-emerald-200 text-xs">
+          <i class="fas fa-columns mr-1"></i>Colunas a exportar
+          <span class="ml-1 text-emerald-600 dark:text-emerald-400 font-normal">(desmarque as que não quiser)</span>
+        </div>
+        <div class="flex gap-2 text-[11px]">
+          <button type="button" id="export-cols-all"
+            class="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded">
+            <i class="fas fa-check-double mr-1"></i>Todas
+          </button>
+          <button type="button" id="export-cols-none"
+            class="px-2 py-0.5 bg-slate-500 hover:bg-slate-600 text-white rounded">
+            <i class="fas fa-square mr-1"></i>Nenhuma
+          </button>
+          <button type="button" id="export-cols-reset"
+            class="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 text-white rounded">
+            <i class="fas fa-rotate-left mr-1"></i>Padrão
+          </button>
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-x-3 gap-y-1">
+        ${EXPORT_COLUMNS.map((c) => `
+          <label class="inline-flex items-center gap-1 cursor-pointer text-xs text-emerald-800 dark:text-emerald-100">
+            <input type="checkbox" class="export-col-check rounded" data-col="${escapeHtml(c.key)}"
+              ${exportSelectedColumns.has(c.key) ? 'checked' : ''} />
+            <span>${escapeHtml(c.label)}</span>
+          </label>
+        `).join('')}
+      </div>
+    </div>
+  `;
+
+  function renderPreviewTable() {
+    const activeCols = getActiveExportColumns();
+    if (activeCols.length === 0) {
+      return `<div class="p-4 text-center text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+        <i class="fas fa-exclamation-triangle mr-1"></i>
+        Selecione ao menos uma coluna para exportar.
+      </div>`;
+    }
+    const rows = preview.map((t) => {
+      const cells = activeCols.map((c) => c.getter(t));
       const cls = t.isReversal ? 'reversal-row' : '';
       const valueColor = t.type === 'credit'
         ? 'color:#16a34a;font-weight:600'
         : 'color:#dc2626;font-weight:600';
       return `<tr class="${cls}">
-        ${row
-          .map((cell, i) => {
-            const style = i === 8 ? `style="${valueColor};white-space:nowrap"` : '';
-            const nowrap = (i === 0 || i === 9 || i === 10) ? 'style="white-space:nowrap"' : '';
-            return `<td ${style || nowrap}>${escapeHtml(String(cell))}</td>`;
-          })
-          .join('')}
+        ${cells.map((cell, i) => {
+          const col = activeCols[i];
+          const style = col.key === 'amount' ? `style="${valueColor};white-space:nowrap"` : '';
+          const nowrap = (col.key === 'date' || col.key === 'balanceBefore' || col.key === 'balanceAfter') ? 'style="white-space:nowrap"' : '';
+          return `<td ${style || nowrap}>${escapeHtml(String(cell))}</td>`;
+        }).join('')}
       </tr>`;
-    })
-    .join('');
+    }).join('');
+    return `
+      <div class="overflow-auto border border-gray-200 dark:border-slate-700 rounded-lg" style="max-height:50vh">
+        <table>
+          <thead>
+            <tr>${activeCols.map((c) => `<th>${escapeHtml(c.label)}</th>`).join('')}</tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
 
   const overflowNotice = overflow > 0
     ? `<div class="mt-2 p-2 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded text-xs text-amber-800 dark:text-amber-200 text-center">
@@ -2555,19 +2729,51 @@ function openExportPreview(format) {
   previewBody.innerHTML = `
     ${accountHtml}
     ${filtersHtml}
-    <div class="overflow-auto border border-gray-200 dark:border-slate-700 rounded-lg" style="max-height:50vh">
-      <table>
-        <thead>
-          <tr>${EXPORT_COLUMNS.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr>
-        </thead>
-        <tbody>${tableRows}</tbody>
-      </table>
-    </div>
+    ${columnsSelectorHtml}
+    <div id="preview-table-wrapper">${renderPreviewTable()}</div>
     ${overflowNotice}
   `;
 
+  // Conecta os checkboxes de coluna
+  const rerenderTable = () => {
+    const wrapper = document.getElementById('preview-table-wrapper');
+    if (wrapper) wrapper.innerHTML = renderPreviewTable();
+  };
+  previewBody.querySelectorAll('.export-col-check').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const key = cb.getAttribute('data-col');
+      if (cb.checked) exportSelectedColumns.add(key);
+      else exportSelectedColumns.delete(key);
+      rerenderTable();
+    });
+  });
+  const btnAll = document.getElementById('export-cols-all');
+  if (btnAll) btnAll.onclick = () => {
+    EXPORT_COLUMNS.forEach((c) => exportSelectedColumns.add(c.key));
+    previewBody.querySelectorAll('.export-col-check').forEach((cb) => (cb.checked = true));
+    rerenderTable();
+  };
+  const btnNone = document.getElementById('export-cols-none');
+  if (btnNone) btnNone.onclick = () => {
+    exportSelectedColumns.clear();
+    previewBody.querySelectorAll('.export-col-check').forEach((cb) => (cb.checked = false));
+    rerenderTable();
+  };
+  const btnReset = document.getElementById('export-cols-reset');
+  if (btnReset) btnReset.onclick = () => {
+    exportSelectedColumns = new Set(EXPORT_COLUMNS.filter((c) => c.default).map((c) => c.key));
+    previewBody.querySelectorAll('.export-col-check').forEach((cb) => {
+      cb.checked = exportSelectedColumns.has(cb.getAttribute('data-col'));
+    });
+    rerenderTable();
+  };
+
   // Configura ação do botão de confirmar
   confirmBtn.onclick = () => {
+    if (exportSelectedColumns.size === 0) {
+      alert('Selecione ao menos uma coluna para exportar.');
+      return;
+    }
     closeExportPreview();
     if (format === 'pdf') doExportPDF();
     else doExportCSV();
@@ -2599,6 +2805,9 @@ function collectAppliedFilters() {
   if (reversalEl && reversalEl.value === 'only') list.push('Somente estornos');
   if (reversalEl && reversalEl.value === 'exclude') list.push('Sem estornos');
   if (state.reversalOnlyMode) list.push('Botão exclusivo: apenas estornos');
+  const devolucaoEl = document.getElementById('filter-devolucao');
+  if (devolucaoEl && devolucaoEl.value === 'only') list.push('Somente devoluções PIX');
+  if (devolucaoEl && devolucaoEl.value === 'exclude') list.push('Sem devoluções PIX');
   const boletoEl = document.getElementById('filter-boleto');
   if (boletoEl && boletoEl.value === 'only') list.push('Somente boletos');
   if (boletoEl && boletoEl.value === 'exclude') list.push('Sem boletos');
@@ -2618,25 +2827,28 @@ function doExportCSV() {
   const source = getExportSource();
   if (source.length === 0) return;
 
-  // Para CSV: valores numéricos em formato BR (com vírgula) mas sem prefixo +/-
-  // (já temos coluna "Tipo" para indicar crédito/débito).
-  const rows = source.map((t) => [
-    formatDateTime(t.date),
-    getTrnTypeLabel(t.trnType) + (t.isReversal ? ' (Estorno)' : ''),
-    (t.description || '').replace(/"/g, '""'),
-    (t.counterparty || '').replace(/"/g, '""'),
-    t.isReversal ? (t.reversalRecipient || '').replace(/"/g, '""') : '',
-    t.isBoleto ? 'Sim' : '',
-    t.isBoleto ? (t.boletoReason || 'Boleto') : '',
-    t.txId || t.fitId || t.id || '',
-    t.endToEnd || '',
-    t.amount.toFixed(2).replace('.', ','),
-    t.balanceBefore != null ? t.balanceBefore.toFixed(2).replace('.', ',') : '',
-    t.balanceAfter != null ? t.balanceAfter.toFixed(2).replace('.', ',') : '',
-  ]);
+  // Usa APENAS as colunas selecionadas no modal de prévia.
+  const activeCols = getActiveExportColumns();
+  if (activeCols.length === 0) {
+    alert('Selecione ao menos uma coluna para exportar.');
+    return;
+  }
+
+  // Para CSV: formato BR (com vírgula) para valores numéricos. Nas colunas
+  // de valor/saldos, sobrescreve o formatador do getter para gerar "-10,50"
+  // ao invés de "R$ 10,50" (mais amigável para Excel).
+  const csvGetter = (t, col) => {
+    if (col.key === 'amount') return t.amount.toFixed(2).replace('.', ',');
+    if (col.key === 'balanceBefore') return t.balanceBefore != null ? t.balanceBefore.toFixed(2).replace('.', ',') : '';
+    if (col.key === 'balanceAfter') return t.balanceAfter != null ? t.balanceAfter.toFixed(2).replace('.', ',') : '';
+    // Escape de aspas duplas
+    return String(col.getter(t) || '').replace(/"/g, '""');
+  };
+
+  const rows = source.map((t) => activeCols.map((c) => csvGetter(t, c)));
 
   const csv = [
-    EXPORT_COLUMNS.join(';'),
+    activeCols.map((c) => c.label).join(';'),
     ...rows.map((r) => r.map((c) => `"${c}"`).join(';')),
   ].join('\n');
 
@@ -2887,29 +3099,48 @@ function doExportPDF() {
   y += 4;
 
   // ==========================================================================
-  // TABELA DE TRANSAÇÕES
+  // TABELA DE TRANSAÇÕES — usa APENAS colunas selecionadas no modal.
   // ==========================================================================
-  // Headers e rows: identificadores em DUAS colunas —
-  //  - TxId    : ID que aparece no comprovante ("Transação #NNNNN" do MEMO
-  //              ou FITID como fallback).
-  //  - EndToEnd: EndToEndId BACEN (REFNUM do OFX), só quando é PIX com E2E.
-  const head = [[
-    'Data/Hora', 'Tipo', 'Descrição', 'Conta Destino/Origem',
-    'Destinatário Estorno',
-    'TxId', 'EndToEndId (PIX)', 'Valor', 'Saldo Antes', 'Saldo Após'
-  ]];
-  const rows = source.map((t) => [
-    formatDateTime(t.date),
-    getTrnTypeLabel(t.trnType) + (t.isReversal ? ' *' : ''),
-    t.description || '',
-    t.counterparty || '-',
-    t.isReversal ? (t.reversalRecipient || '') : '',
-    t.txId || t.fitId || t.id || '-',
-    t.endToEnd || '-',
-    (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount),
-    t.balanceBefore != null ? formatCurrency(t.balanceBefore) : '-',
-    t.balanceAfter != null ? formatCurrency(t.balanceAfter) : '-',
-  ]);
+  const activeCols = getActiveExportColumns();
+  if (activeCols.length === 0) {
+    alert('Selecione ao menos uma coluna para exportar.');
+    return;
+  }
+
+  const head = [activeCols.map((c) => c.label)];
+  const rows = source.map((t) => activeCols.map((c) => {
+    // Getters do PDF: alguns tipos precisam de tratamento especial (linhas
+    // "-" em vez de string vazia) para melhor legibilidade impressa.
+    const v = c.getter(t);
+    if (v === '' || v == null) {
+      if (c.key === 'counterparty' || c.key === 'txId' || c.key === 'endToEnd'
+          || c.key === 'balanceBefore' || c.key === 'balanceAfter') return '-';
+    }
+    return v;
+  }));
+
+  // Mapa de estilos por chave — aplicado apenas para as colunas presentes.
+  const KEY_STYLES = {
+    date:              { cellWidth: 22 },
+    type:              { cellWidth: 20 },
+    description:       { cellWidth: 'auto' },
+    counterparty:      { cellWidth: 28 },
+    reversalRecipient: { cellWidth: 22 },
+    isBoleto:          { cellWidth: 14 },
+    boletoReason:      { cellWidth: 18 },
+    txId:              { cellWidth: 22, font: 'courier', fontSize: 5.5 },
+    endToEnd:          { cellWidth: 30, font: 'courier', fontSize: 5.5 },
+    amount:            { cellWidth: 20, halign: 'right', fontStyle: 'bold' },
+    balanceBefore:     { cellWidth: 18, halign: 'right' },
+    balanceAfter:      { cellWidth: 20, halign: 'right', fontStyle: 'bold' },
+  };
+  const columnStyles = {};
+  activeCols.forEach((c, i) => { columnStyles[i] = KEY_STYLES[c.key] || {}; });
+
+  // Índices das colunas com tratamento visual especial (para didParseCell)
+  const amountColIdx = activeCols.findIndex((c) => c.key === 'amount');
+  const balanceAfterColIdx = activeCols.findIndex((c) => c.key === 'balanceAfter');
+  const reversalRecipColIdx = activeCols.findIndex((c) => c.key === 'reversalRecipient');
 
   doc.autoTable({
     startY: y,
@@ -2934,38 +3165,26 @@ function doExportPDF() {
       lineColor: COL.primary,
     },
     alternateRowStyles: { fillColor: COL.slate50 },
-    columnStyles: {
-      0: { cellWidth: 22 },                                 // Data
-      1: { cellWidth: 18 },                                 // Tipo
-      2: { cellWidth: 'auto' },                             // Descrição
-      3: { cellWidth: 28 },                                 // Contraparte
-      4: { cellWidth: 22 },                                 // Destinatário Estorno
-      5: { cellWidth: 18, font: 'courier', fontSize: 5.5 }, // TxId
-      6: { cellWidth: 28, font: 'courier', fontSize: 5.5 }, // EndToEndId
-      7: { cellWidth: 20, halign: 'right', fontStyle: 'bold' }, // Valor
-      8: { cellWidth: 18, halign: 'right' },                // Saldo Antes
-      9: { cellWidth: 20, halign: 'right', fontStyle: 'bold' }, // Saldo Após
-    },
+    columnStyles,
     didParseCell: (data) => {
       if (data.section !== 'body') return;
       const t = source[data.row.index];
-      // Estornos: fundo amber suave em toda a linha (prioridade sobre boleto)
-      if (t && t.isReversal) {
+      if (!t) return;
+      // Devolução PIX: fundo violeta suave; Estorno: amber; Boleto: azul.
+      if (t.isDevolucao) {
+        data.cell.styles.fillColor = [237, 233, 254]; // violet-100
+      } else if (t.isReversal) {
         data.cell.styles.fillColor = COL.reversalBg;
-      } else if (t && t.isBoleto) {
-        // Boleto: fundo azul suave
+      } else if (t.isBoleto) {
         data.cell.styles.fillColor = [219, 234, 254]; // blue-100
       }
-      // Coluna VALOR (7): verde ou vermelho
-      if (data.column.index === 7) {
+      if (amountColIdx >= 0 && data.column.index === amountColIdx) {
         data.cell.styles.textColor = t.amount >= 0 ? COL.green : COL.red;
       }
-      // Saldo após (9) negativo: vermelho
-      if (data.column.index === 9 && t.balanceAfter != null && t.balanceAfter < 0) {
+      if (balanceAfterColIdx >= 0 && data.column.index === balanceAfterColIdx && t.balanceAfter != null && t.balanceAfter < 0) {
         data.cell.styles.textColor = COL.red;
       }
-      // Destinatário Estorno (4): amber escuro
-      if (data.column.index === 4 && t.isReversal && t.reversalRecipient) {
+      if (reversalRecipColIdx >= 0 && data.column.index === reversalRecipColIdx && t.isReversal && t.reversalRecipient) {
         data.cell.styles.textColor = [146, 64, 14]; // amber-800
         data.cell.styles.fontStyle = 'bold';
       }
@@ -3292,6 +3511,14 @@ function handleAppendFile(file) {
     showAppendAlert('err', 'Nenhum extrato foi carregado ainda.');
     return;
   }
+  // Limite de 20 arquivos anexados (o 1º carregado já conta).
+  if (state.appendedFiles >= state.MAX_APPENDED_FILES) {
+    showAppendAlert('err',
+      `<strong>Limite atingido</strong>: você já anexou ${state.appendedFiles} arquivos. ` +
+      `O máximo permitido é ${state.MAX_APPENDED_FILES}.`
+    );
+    return;
+  }
   const reader = new FileReader();
   reader.onload = (ev) => {
     try {
@@ -3386,6 +3613,7 @@ function mergeSequentialOFX(parsed, filename) {
   state.transactions = combined;
   state.accountInfo = mergedInfo;
   state.filtered = [...combined];
+  state.appendedFiles++;
 
   // Reabre o dashboard com os dados mesclados
   renderDashboard();
@@ -3401,6 +3629,8 @@ function mergeSequentialOFX(parsed, filename) {
   }
   parts.push(`<span class="mx-2">·</span>`);
   parts.push(`${addedCount} novas`);
+  parts.push(`<span class="mx-2">·</span>`);
+  parts.push(`<span class="text-xs text-gray-500 dark:text-slate-400">Arquivo ${state.appendedFiles}/${state.MAX_APPENDED_FILES}</span>`);
 
   let severity = 'ok';
   let extra = '';
@@ -3443,16 +3673,19 @@ function mergeSequentialOFX(parsed, filename) {
 function analyzeRanges(aStart, aEnd, bStart, bEnd) {
   if (!aStart || !aEnd || !bStart || !bEnd) return { type: 'unknown' };
   const ONE_DAY = 24 * 60 * 60 * 1000;
+  // Threshold para considerar como "sequencial" (sem alerta de gap):
+  // até 90 dias entre um extrato e outro é aceitável.
+  const MAX_SEQUENTIAL_GAP = 90 * ONE_DAY;
   // b totalmente depois de a?
   if (bStart >= aEnd) {
     const gap = bStart.getTime() - aEnd.getTime();
-    if (gap <= ONE_DAY) return { type: 'sequential', aEnd, bStart };
+    if (gap <= MAX_SEQUENTIAL_GAP) return { type: 'sequential', aEnd, bStart };
     return { type: 'gap', aEnd, bStart };
   }
   // a totalmente depois de b?
   if (aStart >= bEnd) {
     const gap = aStart.getTime() - bEnd.getTime();
-    if (gap <= ONE_DAY) return { type: 'reverse-sequential', aEnd, bStart };
+    if (gap <= MAX_SEQUENTIAL_GAP) return { type: 'reverse-sequential', aEnd, bStart };
     return { type: 'gap', aEnd: bEnd, bStart: aStart };
   }
   // b contido em a ou a contido em b?

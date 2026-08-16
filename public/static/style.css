@@ -80,6 +80,25 @@ html:not(.dark) {
   font-weight: 600;
   text-transform: uppercase;
 }
+/* Variante compacta usada na coluna Tipo (badges menores para caber
+   até 3 empilhados em cada linha da tabela). */
+.badge-sm {
+  padding: 1px 6px;
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+}
+.badge-sm i {
+  font-size: 8.5px;
+}
+/* Container flex-column: empilha os badges verticalmente na coluna
+   Tipo quando há mais de um (débito/crédito + estorno + boleto). */
+.tipo-badges {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: center;
+}
 .badge-credit {
   background-color: #d1fae5;
   color: #065f46;
@@ -91,6 +110,10 @@ html:not(.dark) {
 .badge-reversal {
   background-color: #fef3c7;
   color: #92400e;
+}
+.badge-devolucao {
+  background-color: #ede9fe;
+  color: #5b21b6;
 }
 .badge-boleto {
   background-color: #dbeafe;
@@ -107,6 +130,10 @@ html:not(.dark) {
 .dark .badge-reversal {
   background-color: rgba(146, 64, 14, 0.35);
   color: #fcd34d;
+}
+.dark .badge-devolucao {
+  background-color: rgba(91, 33, 182, 0.35);
+  color: #c4b5fd;
 }
 .dark .badge-boleto {
   background-color: rgba(30, 64, 175, 0.35);
@@ -640,10 +667,11 @@ html:not(.dark) {
   border-spacing: 0;
 }
 
-/* Bordas verticais entre colunas (grid vertical) */
+/* Bordas verticais entre colunas (grid vertical) — reforçadas para
+   melhorar a leitura visual das colunas em telas maiores. */
 .transactions-table th,
 .transactions-table td {
-  border-right: 1px solid #e5e7eb;
+  border-right: 1px solid #d1d5db;
   vertical-align: middle;
 }
 .transactions-table th:last-child,
@@ -652,7 +680,14 @@ html:not(.dark) {
 }
 .dark .transactions-table th,
 .dark .transactions-table td {
-  border-right-color: #334155;
+  border-right-color: #475569;
+}
+
+/* Descrição em fonte um pouco menor para caber melhor na coluna. */
+.description-cell {
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-word;
 }
 
 /* Bordas horizontais entre linhas (grid horizontal) */
@@ -670,24 +705,38 @@ html:not(.dark) {
 }
 
 /* Sticky header — o cabeçalho da tabela acompanha o scroll VERTICAL
-   da PÁGINA (window). Como a rolagem é da janela e não do container
-   overflow, precisamos usar top:0 com position:sticky no <thead>. */
+   da PÁGINA (window).
+
+   Para funcionar corretamente:
+   - Nenhum ancestral pode ter overflow != visible (nem hidden nem clip).
+   - Nenhum ancestral pode criar um novo contexto de rolagem próprio.
+   - `position: sticky` aplicado no <thead> DEVE ter `top: 0` e um
+     background sólido (senão o conteúdo da tabela "vaza" por baixo).
+   - Também aplicamos position:sticky nos próprios <th> como fallback,
+     porque em alguns navegadores (Safari antigo) o sticky no <thead>
+     não funciona diretamente. */
 .transactions-thead {
   position: sticky;
   top: 0;
   z-index: 30;
-  /* Sombra sutil quando "grudado" no topo */
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
 }
-.dark .transactions-thead {
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+.transactions-thead tr {
+  /* Necessário para o sticky funcionar em Firefox */
+  position: sticky;
+  top: 0;
+  z-index: 30;
 }
-/* Reforça o fundo — muitos navegadores herdam transparente em sticky */
 .transactions-thead th {
+  position: sticky;
+  top: 0;
+  z-index: 30;
   background-color: #f9fafb;
+  /* Sombra sutil quando "grudado" no topo */
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.06);
 }
 .dark .transactions-thead th {
   background-color: #0f172a;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.06), 0 2px 4px rgba(0, 0, 0, 0.4);
 }
 
 /* Divide-y do Tailwind pode conflitar com nossa border-bottom.
