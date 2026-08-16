@@ -2391,26 +2391,9 @@ function renderTable() {
         ? `<span class="text-amber-800 dark:text-amber-200 font-medium" title="Contraparte da transação original">${escapeHtml(t.reversalRecipient)}</span>`
         : (t.isReversal ? '<span class="text-gray-400 dark:text-slate-500 italic text-xs">Não identificado</span>' : dash);
 
-      // Coluna Referência — identificador do OFX (cascata real):
-      //   E2E > REFNUM > #Nº do MEMO > FITID.  Cor por origem.
-      let txIdCell = dash;
-      if (t.reference) {
-        const styles = {
-          e2e:     { label: 'E2E',    color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40', valueColor: 'text-emerald-200',
-                     title: 'EndToEndId BACEN (padrão E<32>) extraído diretamente do OFX — identificador universal PIX.' },
-          refnum:  { label: 'REFNUM', color: 'bg-blue-500/20 text-blue-300 border-blue-500/40',       valueColor: 'text-blue-200',
-                     title: 'REFNUM — tag <REFNUM> do próprio OFX. Referência oficial da transação fornecida pelo banco.' },
-          memoref: { label: '#Nº',    color: 'bg-purple-500/20 text-purple-300 border-purple-500/40', valueColor: 'text-purple-200',
-                     title: 'Nº de Transação extraído do MEMO — identificador interno do provedor OFX (ex.: "Transação #NNNNN").' },
-          fitid:   { label: 'FITID',  color: 'bg-slate-500/20 text-slate-300 border-slate-500/40',   valueColor: 'text-slate-200',
-                     title: 'FITID — ID interno do banco no OFX. Este OFX não fornece E2E BACEN nem REFNUM para esta transação.' },
-        };
-        const s = styles[t.referenceSource] || styles.fitid;
-        txIdCell = `<div class="max-w-[220px]" title="${escapeHtml(s.title)}">
-          <span class="inline-block px-1 py-[1px] mb-0.5 text-[8.5px] font-sans font-semibold uppercase tracking-wide rounded border ${s.color}">${s.label}</span>
-          <div class="text-[10.5px] ${s.valueColor} font-mono break-all leading-tight">${escapeHtml(t.reference)}</div>
-        </div>`;
-      }
+      // Coluna Referência REMOVIDA a pedido do usuário. O campo
+      // `t.reference` continua no objeto para uso interno (dedupe,
+      // matching), mas não aparece mais na tabela nem no export.
 
       // Todas as células centralizadas horizontalmente (requisito do
       // usuário: "centralize o texto das colunas"). Valores e saldos
@@ -2435,7 +2418,6 @@ function renderTable() {
           <td class="description-cell px-3 py-3 text-gray-800 dark:text-slate-200 max-w-md text-center align-middle">${escapeHtml(t.description)}</td>
           <td class="px-3 py-3 text-sm text-gray-700 dark:text-slate-300 text-center align-middle">${cpDisplay}</td>
           <td class="px-3 py-3 text-sm text-center align-middle">${reversalRecipientCell}</td>
-          <td class="px-3 py-3 text-center align-middle">${txIdCell}</td>
           <td class="px-3 py-3 text-sm font-semibold text-center whitespace-nowrap align-middle ${valueClass}">
             ${sign} ${formatCurrency(t.absAmount)}
           </td>
@@ -2866,18 +2848,7 @@ const EXPORT_COLUMNS = [
     getter: (t) => (t.isBoleto ? 'Sim' : '') },
   { key: 'boletoReason', label: 'Tipo Boleto',           default: false,
     getter: (t) => (t.isBoleto ? (t.boletoReason || 'Boleto') : '') },
-  { key: 'reference',   label: 'Referência OFX',         default: true,
-    getter: (t) => t.reference || t.txId || t.fitId || t.id || '' },
-  { key: 'referenceSource', label: 'Origem da Referência', default: true,
-    getter: (t) => {
-      const src = t.referenceSource || 'fitid';
-      return ({
-        e2e:     'E2E BACEN',
-        refnum:  'REFNUM (OFX)',
-        memoref: 'Nº do MEMO',
-        fitid:   'FITID (OFX)',
-      })[src] || src;
-    } },
+
   { key: 'amount',      label: 'Valor',                  default: true,
     getter: (t) => (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount) },
   { key: 'balanceBefore', label: 'Saldo Antes',          default: true,
@@ -3465,8 +3436,7 @@ function doExportPDF() {
     // "-" em vez de string vazia) para melhor legibilidade impressa.
     const v = c.getter(t);
     if (v === '' || v == null) {
-      if (c.key === 'counterparty' || c.key === 'txId' || c.key === 'reference'
-          || c.key === 'referenceSource'
+      if (c.key === 'counterparty' || c.key === 'txId'
           || c.key === 'balanceBefore' || c.key === 'balanceAfter') return '-';
     }
     return v;
@@ -3482,8 +3452,6 @@ function doExportPDF() {
     isBoleto:          { cellWidth: 14 },
     boletoReason:      { cellWidth: 18 },
     txId:              { cellWidth: 22, font: 'courier', fontSize: 5.5 },
-    reference:         { cellWidth: 30, font: 'courier', fontSize: 5.5 },
-    referenceSource:   { cellWidth: 18, fontSize: 5.5 },
     amount:            { cellWidth: 20, halign: 'right', fontStyle: 'bold' },
     balanceBefore:     { cellWidth: 18, halign: 'right' },
     balanceAfter:      { cellWidth: 20, halign: 'right', fontStyle: 'bold' },

@@ -633,7 +633,7 @@ app.get('/', (c) => {
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Descrição</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Conta Destino/Origem</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="Nome do destinatário original da transação estornada/devolvida">Destinatário Estorno</th>
-                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="Referência real capturada do arquivo OFX, em cascata: (1) E2E BACEN se o banco o exportar, (2) REFNUM do OFX, (3) Nº do MEMO 'Transação #NNNNN', (4) FITID. O padrão OFX brasileiro NÃO inclui o E2E BACEN — mostramos o identificador REAL que o OFX fornece, com badge indicando a origem.">Referência</th>
+
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Valor</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Antes</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Após</th>
