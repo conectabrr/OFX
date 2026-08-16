@@ -16,6 +16,11 @@ const state = {
   // Anexar OFX sequencial: até 20 arquivos anexados (o 1º carregado conta como 1).
   appendedFiles: 1,
   MAX_APPENDED_FILES: 20,
+  // Lista dos arquivos OFX carregados/anexados (para painel + botão Reverter)
+  // { name: string, addedAt: Date, count: number, txnIds: string[], startDate?: Date, endDate?: Date }
+  ofxFiles: [],
+  // Guarda para evitar rebind de listeners em setupFilters() (chamado a cada merge)
+  _filterListenersBound: false,
 };
 
 // ============================================================
@@ -149,6 +154,102 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ============================================================
+// GERAÇÃO DE E2E (EndToEndId BACEN)
+// ============================================================
+/**
+ * Mapa BANKID (código FEBRABAN 3 dígitos) → ISPB (8 dígitos).
+ * Cobre os principais bancos brasileiros. Se BANKID desconhecido,
+ * usamos o próprio BANKID como sufixo do ISPB.
+ * Fonte: https://www.bcb.gov.br/pom/spb/estatistica/port/ASTR003.pdf
+ */
+const BANKID_TO_ISPB = {
+  '001': '00000000', // Banco do Brasil
+  '033': '90400888', // Santander
+  '077': '00416968', // Inter
+  '104': '00360305', // Caixa
+  '208': '58160789', // BTG Pactual
+  '212': '92894922', // Banco Original
+  '237': '60746948', // Bradesco  ← comprovante Bradesco: E60746948...
+  '260': '18236120', // Nubank
+  '273': '82842386', // InfoPago  ← comprovante InfoPago: E82842386...
+  '290': '05684234', // PagBank
+  '323': '10573521', // Mercado Pago
+  '336': '13140088', // C6 Bank
+  '341': '60701190', // Itaú     ← comprovante Itaú: E60701190...
+  '356': '60746948', // Real (mapeado p/ Bradesco)
+  '380': '13486793', // PicPay
+  '389': '17184037', // Mercantil
+  '399': '60394079', // HSBC
+  '422': '58497702', // Safra
+  '461': '13112175', // Asaas IP
+  '735': '60814191', // Neon → é Votorantim; Neon usa ISPB próprio
+  '746': '30306294', // Modal
+  '748': '01181521', // Sicredi
+  '756': '02038232', // Sicoob
+  '655': '17298092', // Votorantim
+};
+
+function bankIdToIspb(bankId) {
+  if (!bankId) return '00000000';
+  const b = String(bankId).padStart(3, '0');
+  if (BANKID_TO_ISPB[b]) return BANKID_TO_ISPB[b];
+  // Fallback: usa o próprio bankId zeropadded pra 8 dígitos
+  return String(bankId).replace(/\D/g, '').padStart(8, '0').slice(0, 8);
+}
+
+/**
+ * Hash determinístico simples (djb2) → string hex de N chars.
+ * Não é criptográfico — só precisa ser estável e ter boa distribuição.
+ */
+function stableHash(str, length) {
+  let h = 5381;
+  const s = String(str || '');
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h + s.charCodeAt(i)) | 0; // h*33 + c
+  }
+  // Uma segunda passada com sal para aumentar entropia
+  let g = 0x1505;
+  for (let i = s.length - 1; i >= 0; i--) {
+    g = ((g << 3) + g + s.charCodeAt(i)) | 0;
+  }
+  const combined = ((h >>> 0).toString(16) + (g >>> 0).toString(16)).padStart(16, '0');
+  return combined.slice(0, length).toUpperCase();
+}
+
+/**
+ * Formata data como YYYYMMDDHHmm (12 chars) para o E2E.
+ * Se data faltar, usa "000000000000".
+ */
+function formatE2EDate(date) {
+  if (!(date instanceof Date) || isNaN(date.getTime())) return '000000000000';
+  const pad = (n, w = 2) => String(n).padStart(w, '0');
+  return (
+    date.getFullYear() +
+    pad(date.getMonth() + 1) +
+    pad(date.getDate()) +
+    pad(date.getHours()) +
+    pad(date.getMinutes())
+  );
+}
+
+/**
+ * Deriva um E2E BACEN-like determinístico para transações cujo OFX não
+ * exporta o E2E real. Formato padrão BACEN:
+ *   E<ISPB-8><YYYYMMDDHHmm-12><random-11> = 32 chars total
+ *
+ * Como é determinístico (mesmo input → mesmo output), a mesma transação
+ * sempre gera o MESMO E2E, permitindo referência estável.
+ */
+function deriveE2E(accountInfo, date, fitId, refNum, originalTxRef, amount) {
+  const ispb = bankIdToIspb(accountInfo?.bankId);
+  const dateStr = formatE2EDate(date);
+  // Semente única da transação (FITID é o mais estável do OFX)
+  const seed = `${fitId}|${refNum}|${originalTxRef}|${amount}`;
+  const random = stableHash(seed, 11);
+  return `E${ispb}${dateStr}${random}`;
+}
+
+// ============================================================
 // PARSER OFX
 // ============================================================
 /**
@@ -244,31 +345,9 @@ function parseOFX(content) {
     let reversalRecipient = '';
 
     // ------------------------------------------------------------------
-    // IDENTIFICADORES DA TRANSAÇÃO (o que aparece no comprovante):
-    //
-    // 1) TxId  = REFNUM do OFX
-    //    É o identificador da instituição que aparece no comprovante do
-    //    app do banco como "ID da transação" / "TxId". Exemplos reais
-    //    vistos no arquivo InfoPago/Nubank:
-    //       SE000372801790KKIKHDO4RAUII4PLGYLM
-    //       CIELO202608020000000000000002074774
-    //       mpqrinter171144758847
-    //       LINX00008DEF7D13DD39E09X855D81CB4B6
-    //       72ea7597dd33488f8e5b7093e9af64d2
-    //
-    // 2) EndToEndId (E2E) = padrão BACEN do PIX
-    //    Formato: E<ISPB-8-dígitos><timestamp><random>, 32 caracteres,
-    //    sempre começa com "E". Ex.: E82842386202608151811...
-    //    Este campo NEM SEMPRE está no OFX (muitos bancos, incluindo
-    //    Nubank/InfoPago, não exportam o E2E BACEN — o app o busca em
-    //    outra API). Só é preenchido se encontrarmos o padrão em MEMO,
-    //    NAME ou REFNUM.
-    //
-    // 3) "Transação #NNNNN" no MEMO
-    //    É uma referência INTERNA do provedor OFX (ex: nº sequencial
-    //    do processador InfoPago). NÃO é o TxId do comprovante — é só
-    //    uma referência de correlação entre estorno e transação original.
-    //    Guardamos apenas em `originalTxRef` para o lookup de estornos.
+    // Ref. interna "#NNNNN" do MEMO — usada só para casar estornos
+    // com as transações originais (lookup interno). NÃO é exibida
+    // como identificador principal.
     // ------------------------------------------------------------------
     let originalTxRef = '';
     const txRefMatch = `${memo} ${name}`.match(/Transa[cç][aã]o\s*#\s*(\d{4,})/i);
@@ -278,37 +357,52 @@ function parseOFX(content) {
     }
 
     // ------------------------------------------------------------------
-    // TxId final — resolvido em ordem de PRIORIDADE:
+    // E2E (EndToEndId, padrão BACEN) — o identificador que aparece no
+    // comprovante do banco. Formato:
+    //   E + ISPB(8 dígitos) + YYYYMMDDHHmm(12) + Random(11 alfanum) = 32 chars
     //
-    //   1º REFNUM (quando existe) — geralmente é o ID mais autoritativo
-    //      da instituição. Ex.: "SE000372801790KKIKHDO4RAUII4PLGYLM",
-    //      "CIELO202608...", "mpqrinter171144758847". No OFX InfoPago
-    //      só ~7% das transações têm REFNUM.
+    // Cada banco usa um nome diferente no comprovante:
+    //   Itaú → "ID da transação"
+    //   Bradesco → "Número de Controle"
+    //   InfoPago → "Autenticação"
+    //   Nubank → "ID da transação"
     //
-    //   2º "#NNNNN" do MEMO — é o "ID da transação" que aparece no
-    //      COMPROVANTE do app Nubank/InfoPago para as ~93% restantes.
-    //      Sem ele, essas transações ficariam sem TxId identificável.
+    // Estratégia de resolução (em cascata):
+    //   1º Se algum campo (REFNUM/MEMO/NAME) já contém padrão E<32>,
+    //      usa direto (raro em OFX brasileiros).
+    //   2º Se o REFNUM começa com "E" e tem ~32 chars alfanuméricos,
+    //      usa esse.
+    //   3º Senão, DERIVA um E2E DETERMINÍSTICO no formato BACEN a partir
+    //      de: ISPB do banco (ou BANKID) + data/hora + hash estável do
+    //      identificador interno (FITID/REFNUM/#NNNNN). Assim toda
+    //      transação tem SEU próprio E<32> único e reproduzível.
     //
-    //   3º FITID — último recurso (é apenas dedup do OFX).
-    //
-    // Esta lógica cobre TODAS as 476 transações do OFX de exemplo, não
-    // só as 18 com REFNUM.
+    // O flag `endToEndSource` distingue "real" (veio do OFX) vs "derived"
+    // (foi calculado por nós), para o tooltip explicar isso ao usuário.
     // ------------------------------------------------------------------
-    let txId = refNum;
-    if (!txId && originalTxRef) {
-      // Prefixa com "#" para deixar visualmente claro que veio do MEMO
-      // (é numérico, ao contrário do REFNUM que é alfanumérico).
-      txId = '#' + originalTxRef;
-    }
-    if (!txId) txId = fitId || '';
-
-    // EndToEnd = extrair padrão E\d{31,32} de qualquer campo textual.
-    // Se o REFNUM já for um E2E (raro), aproveita. Senão, tenta MEMO/NAME.
-    // Se nenhum campo tiver E2E, fica vazio (não temos como inventar).
-    const E2E_REGEX = /\bE\d{31,32}\b/;
+    const combinedText = `${refNum} ${memo} ${name}`;
     let endToEnd = '';
-    const e2eMatch = `${refNum} ${memo} ${name}`.match(E2E_REGEX);
-    if (e2eMatch) endToEnd = e2eMatch[0];
+    let endToEndSource = 'derived';
+    // 1) Procura padrão E<32> case-insensitive (BACEN aceita hex também)
+    const e2eMatch = combinedText.match(/\bE[0-9A-Za-z]{31}\b/);
+    if (e2eMatch) {
+      endToEnd = e2eMatch[0];
+      endToEndSource = 'real';
+    } else if (/^E[0-9A-Za-z]{31}$/i.test(refNum)) {
+      endToEnd = refNum;
+      endToEndSource = 'real';
+    } else {
+      // 3) Deriva um E2E BACEN-like determinístico
+      endToEnd = deriveE2E(accountInfo, dtPosted, fitId, refNum, originalTxRef, amount);
+      endToEndSource = 'derived';
+    }
+
+    // TxId "cru" (identificador interno da instituição): REFNUM se existir,
+    // senão a ref "#NNNNN" do MEMO, senão FITID. É guardado separadamente
+    // para consultas técnicas (não exibido como coluna principal).
+    let txId = refNum;
+    if (!txId && originalTxRef) txId = '#' + originalTxRef;
+    if (!txId) txId = fitId || '';
 
     transactions.push({
       id: fitId || `trn-${idx++}`,
@@ -335,17 +429,17 @@ function parseOFX(content) {
       isBoleto,                                // boolean: é pagamento de boleto/título?
       boletoReason,                            // ex: "Boleto", "Título", "DDA", "Ticket"
       isPix,                                   // boolean: é transação PIX?
-      // Identificadores da transação (o que aparece no comprovante):
-      //  - txId    : REFNUM do OFX (o ID da instituição que aparece no
-      //              comprovante como "TxId" / "ID da transação").
-      //              Ex.: "SE00...", "CIELO...", "mpqrinter...", "LINX..."
-      //              Fallback: FITID (dedup do OFX) quando REFNUM ausente.
-      //  - endToEnd: EndToEndId BACEN (padrão E\d{31,32}). Só existe se
-      //              o OFX exportar esse identificador em MEMO/NAME/REFNUM.
-      //              Muitos bancos brasileiros (Nubank/InfoPago) NÃO
-      //              exportam o E2E no OFX — o app do banco busca em API.
-      txId,                                    // ID do comprovante (REFNUM || FITID)
-      endToEnd,                                // EndToEndId BACEN (E\d{31,32}) ou vazio
+      // Identificadores da transação:
+      //  - endToEnd     : E2E BACEN (padrão E<32>). SEMPRE preenchido.
+      //                    Se o OFX trouxer o E2E real, usa direto.
+      //                    Caso contrário, é derivado deterministicamente
+      //                    do ISPB do banco + data/hora + hash do FITID.
+      //  - endToEndSource: 'real' (veio do OFX) | 'derived' (calculado por nós)
+      //  - txId          : identificador interno da instituição (REFNUM,
+      //                    #NNNNN do MEMO ou FITID). Uso técnico/auditoria.
+      txId,
+      endToEnd,
+      endToEndSource,
       fitId,                                   // FITID do OFX (dedup/export)
       refNum,                                  // REFNUM cru (compat)
       // originalTxRef = número "#NNNNN" do MEMO, referência INTERNA
@@ -949,6 +1043,9 @@ resetBtn.addEventListener('click', () => {
   state.currentPage = 1;
   state.pageSize = 100;
   state.selectedIds.clear();
+  state.ofxFiles = [];
+  state.appendedFiles = 1;
+  state.reversalOnlyMode = false;
   if (state.chart) {
     state.chart.destroy();
     state.chart = null;
@@ -960,6 +1057,20 @@ resetBtn.addEventListener('click', () => {
   resetBtn.classList.remove('flex', 'inline-flex');
   fileInput.value = '';
   hideError();
+  // Nota: NÃO resetamos _filterListenersBound — os elementos DOM continuam
+  // vivos entre reloads (dashboard só é hidden/shown, não recriado). Rebindar
+  // novamente causaria os mesmos handlers duplicados. Também não resetamos
+  // os valores dos inputs — próxima carga cuidará disso via setupFilters()
+  // no path do "primeiro arquivo" (o guard interno já não reseta se listeners
+  // estão bound; então limpamos explicitamente aqui).
+  filterStart.value = '';
+  filterEnd.value = '';
+  filterSearch.value = '';
+  filterCounterparty.value = '';
+  filterMin.value = '';
+  filterMax.value = '';
+  filterType.value = 'all';
+  filterSort.value = 'date-desc';
 });
 
 function showError(message) {
@@ -988,11 +1099,26 @@ function handleFile(file) {
       const decoder = new TextDecoder(encoding, { fatal: false });
       const content = decoder.decode(buffer);
       const { accountInfo, transactions } = parseOFX(content);
+      // Marca todas as transações como originadas deste arquivo (sourceFile)
+      transactions.forEach((t) => { t.sourceFile = file.name; });
       state.accountInfo = accountInfo;
       state.transactions = transactions;
       state.filtered = [...transactions];
       state.appendedFiles = 1;  // reset contador ao carregar novo primário
-      renderDashboard();
+      // Calcula range das transações (mais confiável que DTSTART/DTEND)
+      const txnStart = transactions.reduce((min, t) => (!min || (t.date && t.date < min)) ? t.date : min, null);
+      const txnEnd = transactions.reduce((max, t) => (!max || (t.date && t.date > max)) ? t.date : max, null);
+      // Reinicia lista de arquivos OFX (para o painel de gestão)
+      state.ofxFiles = [{
+        name: file.name,
+        addedAt: new Date(),
+        count: transactions.length,
+        txnIds: transactions.map((t) => t.id),
+        startDate: txnStart,
+        endDate: txnEnd,
+        isPrimary: true,
+      }];
+      renderDashboard({ isPrimary: true });
       uploadSection.classList.add('hidden');
       dashboard.classList.remove('hidden');
       // Mostra botão de "Novo arquivo" no header
@@ -1093,12 +1219,14 @@ function looksLikeUtf8(buffer) {
 // ============================================================
 // RENDERIZAÇÃO
 // ============================================================
-function renderDashboard() {
+function renderDashboard(opts = {}) {
+  // opts.isPrimary: true quando é a primeira carga de um arquivo (não merge).
   renderAccountInfo();
-  setupFilters();
+  setupFilters({ isPrimary: opts.isPrimary === true });
   updateReversalUI();
   updateBoletoUI();
   updateDevolucaoUI();
+  renderOfxFilesList();
   applyFilters();
 }
 
@@ -1166,6 +1294,103 @@ function updateDevolucaoUI() {
     if (total > 0) wrapper.classList.remove('hidden');
     else wrapper.classList.add('hidden');
   }
+}
+
+/**
+ * Renderiza a lista de arquivos OFX carregados/anexados no painel de gestão.
+ * Cada linha mostra: nome, período, quantidade + botão "Reverter" (só para
+ * arquivos anexados, o primário não pode ser removido individualmente — teria
+ * que usar "Novo arquivo" no header).
+ */
+function renderOfxFilesList() {
+  const container = document.getElementById('ofx-files-list');
+  const wrapper = document.getElementById('ofx-files-wrapper');
+  if (!container) return;
+
+  // Só mostra o painel se houver 2+ arquivos (senão o counter no header já basta)
+  if (state.ofxFiles.length < 2) {
+    if (wrapper) wrapper.classList.add('hidden');
+    return;
+  }
+  if (wrapper) wrapper.classList.remove('hidden');
+
+  container.innerHTML = state.ofxFiles.map((f, idx) => {
+    const period = (f.startDate && f.endDate)
+      ? `${formatDate(f.startDate)} → ${formatDate(f.endDate)}`
+      : '—';
+    const isPrimary = f.isPrimary === true;
+    const badgeClass = isPrimary
+      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200'
+      : 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200';
+    const badgeLabel = isPrimary ? 'Principal' : `Anexo ${idx}`;
+    const dupNote = (f.duplicates && f.duplicates > 0)
+      ? ` <span class="text-xs text-amber-600 dark:text-amber-400" title="${f.duplicates} transação(ões) duplicada(s) foram ignoradas ao anexar">· ${f.duplicates} dup ignoradas</span>`
+      : '';
+    const revertBtn = isPrimary
+      ? `<span class="text-xs text-gray-400 dark:text-slate-500 italic" title="Use 'Novo arquivo' no cabeçalho para trocar o extrato principal">bloqueado</span>`
+      : `<button data-revert-idx="${idx}" class="revert-ofx-btn text-xs px-2.5 py-1 rounded border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors">
+            <i class="fas fa-undo mr-1"></i>Reverter
+          </button>`;
+    return `
+      <div class="flex items-center gap-3 px-3 py-2 rounded-lg border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800/50">
+        <span class="text-xs font-medium px-2 py-0.5 rounded-full ${badgeClass} whitespace-nowrap">${badgeLabel}</span>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium text-gray-800 dark:text-slate-100 truncate" title="${escapeHtml(f.name)}">
+            <i class="fas fa-file-alt mr-1.5 text-gray-400 dark:text-slate-500"></i>${escapeHtml(f.name)}
+          </div>
+          <div class="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
+            <i class="far fa-calendar-alt mr-1"></i>${period}
+            <span class="mx-1.5">·</span>
+            <i class="fas fa-list mr-1"></i>${f.count} ${f.count === 1 ? 'transação' : 'transações'}${dupNote}
+          </div>
+        </div>
+        ${revertBtn}
+      </div>`;
+  }).join('');
+
+  // Wire dos botões de reverter (idempotente — replace innerHTML remove os antigos)
+  container.querySelectorAll('.revert-ofx-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.revertIdx, 10);
+      revertOfxFile(idx);
+    });
+  });
+}
+
+/**
+ * Reverte a inclusão de um arquivo OFX anexado, removendo suas transações
+ * e ajustando o accountInfo (se necessário). Só funciona para arquivos com
+ * isPrimary=false.
+ */
+function revertOfxFile(idx) {
+  const entry = state.ofxFiles[idx];
+  if (!entry || entry.isPrimary) return;
+  const idsToRemove = new Set(entry.txnIds);
+  // Remove transações
+  state.transactions = state.transactions.filter((t) => !idsToRemove.has(t.id));
+  // Remove entrada da lista
+  state.ofxFiles.splice(idx, 1);
+  state.appendedFiles = Math.max(1, state.appendedFiles - 1);
+  // Recalcula range do accountInfo
+  const remaining = state.transactions;
+  if (remaining.length > 0) {
+    const minDate = remaining.reduce((min, t) => (!min || (t.date && t.date < min)) ? t.date : min, null);
+    const maxDate = remaining.reduce((max, t) => (!max || (t.date && t.date > max)) ? t.date : max, null);
+    state.accountInfo.startDate = minDate;
+    state.accountInfo.endDate = maxDate;
+    // Recalcula evolução de saldos
+    computeBalanceEvolution(remaining, state.accountInfo);
+  }
+  state.filtered = [...state.transactions];
+  // Limpa seleção que possa ter ficado inválida
+  for (const id of Array.from(state.selectedIds)) {
+    if (!state.transactions.some((t) => t.id === id)) state.selectedIds.delete(id);
+  }
+  // Re-renderiza (não é primary — preserva filtros do usuário)
+  renderDashboard({ isPrimary: false });
+  showAppendAlert('ok',
+    `<strong>Arquivo revertido</strong>: ${escapeHtml(entry.name)} · ${entry.count} transações removidas`
+  );
 }
 
 function renderAccountInfo() {
@@ -1261,39 +1486,74 @@ function updatePeriodInfo(start, end) {
   }
 }
 
-function setupFilters() {
-  // Determina o intervalo real das TRANSAÇÕES (não do cabeçalho OFX,
-  // pois DTSTART/DTEND às vezes é o dia inteiro, não a hora real).
+/**
+ * Atualiza o painel de filtros. Chamado por renderDashboard() a cada
+ * abertura/merge. É IDEMPOTENTE: pode ser chamado várias vezes sem
+ * duplicar listeners (o bind é feito uma única vez via bindFilterListeners()).
+ *
+ * O que faz a cada chamada:
+ *   - Recalcula intervalo real das transações e mostra period info
+ *   - Repopula o datalist de contrapartes
+ *   - Atualiza estado do botão eraser
+ *   - Chama initFlatpickr() (idempotente — instância é reutilizada)
+ *
+ * O que faz APENAS na 1ª chamada (arquivo primário):
+ *   - Define valores iniciais dos inputs filterStart/filterEnd
+ *     (não sobrescreve em anexos subsequentes para preservar filtro do usuário)
+ *   - Faz bind() de todos os event listeners de filtro
+ */
+function setupFilters(opts = {}) {
+  // opts.isPrimary=true → primeiro carregamento de um arquivo (reset dos filtros)
+  // opts.isPrimary=false → merge sequencial (preserva filtros do usuário)
+  const isPrimary = opts.isPrimary === true;
+
+  // Intervalo real das transações (não DTSTART/DTEND do OFX)
   const realStart = computeTxnRangeStart();
   const realEnd = computeTxnRangeEnd();
 
-  // Define datas iniciais baseadas nas transações (com hora)
-  if (state.accountInfo.startDate) {
-    const startAtMidnight = new Date(state.accountInfo.startDate);
-    startAtMidnight.setHours(0, 0, 0, 0);
-    filterStart.value = formatDateTimeBR(startAtMidnight);
-  }
-  if (state.accountInfo.endDate) {
-    const endAtEndOfDay = new Date(state.accountInfo.endDate);
-    endAtEndOfDay.setHours(23, 59, 0, 0);
-    filterEnd.value = formatDateTimeBR(endAtEndOfDay);
+  // Define datas iniciais só quando é primary (arquivo novo carregado do zero).
+  // Em merges, preserva o que o usuário tinha (não sobrescreve o filtro dele).
+  if (isPrimary) {
+    if (state.accountInfo.startDate) {
+      const startAtMidnight = new Date(state.accountInfo.startDate);
+      startAtMidnight.setHours(0, 0, 0, 0);
+      filterStart.value = formatDateTimeBR(startAtMidnight);
+      // Sincroniza com flatpickr se já existir
+      if (flatpickrInstances.start) flatpickrInstances.start.setDate(startAtMidnight, false);
+    }
+    if (state.accountInfo.endDate) {
+      const endAtEndOfDay = new Date(state.accountInfo.endDate);
+      endAtEndOfDay.setHours(23, 59, 0, 0);
+      filterEnd.value = formatDateTimeBR(endAtEndOfDay);
+      if (flatpickrInstances.end) flatpickrInstances.end.setDate(endAtEndOfDay, false);
+    }
   }
 
-  // Mostra o PERÍODO REAL do documento (primeira e última transação)
-  // no bloco de filtros para orientar o usuário sobre o intervalo válido.
+  // Mostra o PERÍODO REAL do documento (sempre atualiza — pode ter crescido)
   updatePeriodInfo(realStart, realEnd);
 
-  // === Substitui o datepicker nativo por Flatpickr ===
-  // O calendário nativo é minúsculo e não pode ser estilizado. Flatpickr
-  // renderiza um calendário maior e customizável, respondendo ao pedido
-  // do usuário de "quando abrir o calendário fique maior e melhor".
-  // Dispara 'change' no input original para preservar os handlers de filtro.
+  // Flatpickr é idempotente (destroy antes de criar)
   initFlatpickr();
 
-
-  // Popula datalist de contrapartes (autocomplete)
+  // Repopula datalist de contrapartes (novos nomes podem ter chegado)
   populateCounterpartyList();
+  updateCounterpartyClearBtn();
 
+  // Faz bind dos listeners UMA ÚNICA VEZ (nunca depende do isPrimary)
+  if (!state._filterListenersBound) {
+    bindFilterListeners();
+    state._filterListenersBound = true;
+  }
+}
+
+/**
+ * Faz o bind de TODOS os event listeners do painel de filtros.
+ * Chamado UMA ÚNICA VEZ na primeira invocação de setupFilters().
+ *
+ * ⚠️ NUNCA chame direto de renderDashboard() — sempre via setupFilters()
+ * que tem o guard state._filterListenersBound.
+ */
+function bindFilterListeners() {
   const filterEls = [
     filterType,
     filterStart,
@@ -1313,8 +1573,7 @@ function setupFilters() {
     el.addEventListener('change', handler);
   });
 
-  // === Botão borracha (eraser) do filtro Conta Destino/Origem ===
-  // Atualiza visibilidade do botão sempre que o input muda.
+  // Botão borracha do filtro Conta Destino/Origem
   filterCounterparty.addEventListener('input', updateCounterpartyClearBtn);
   const clearCpBtn = document.getElementById('filter-counterparty-clear');
   if (clearCpBtn) {
@@ -1325,14 +1584,11 @@ function setupFilters() {
       updateCounterpartyClearBtn();
       state.currentPage = 1;
       applyFilters();
-      // Devolve o foco ao input para o usuário poder digitar de novo se quiser
       filterCounterparty.focus();
     });
   }
-  // Estado inicial do botão eraser (pode já ter valor pré-preenchido)
-  updateCounterpartyClearBtn();
 
-  // Filtro estorno (checkbox)
+  // Filtro estorno
   const filterReversal = document.getElementById('filter-reversal');
   if (filterReversal) {
     filterReversal.addEventListener('change', () => {
@@ -1341,7 +1597,7 @@ function setupFilters() {
     });
   }
 
-  // Filtro boleto (dropdown)
+  // Filtro boleto
   const filterBoleto = document.getElementById('filter-boleto');
   if (filterBoleto) {
     filterBoleto.addEventListener('change', () => {
@@ -1350,7 +1606,7 @@ function setupFilters() {
     });
   }
 
-  // Filtro devolução PIX (dropdown, separado de estorno)
+  // Filtro devolução PIX
   const filterDevolucao = document.getElementById('filter-devolucao');
   if (filterDevolucao) {
     filterDevolucao.addEventListener('change', () => {
@@ -1359,8 +1615,7 @@ function setupFilters() {
     });
   }
 
-  // Regra de coer\u00eancia: quando o TIPO muda, valida se o filtro de contraparte
-  // ainda \u00e9 v\u00e1lido no novo escopo (n\u00e3o pode divergir).
+  // Regra de coerência TIPO x contraparte
   filterType.addEventListener('change', () => {
     const cpValue = filterCounterparty.value.trim().toLowerCase();
     if (!cpValue) return;
@@ -1370,8 +1625,6 @@ function setupFilters() {
     );
     if (!entry) return;
     const [, data] = entry;
-    // Se filtrou por CRÉDITO mas o movimento só tem débitos (ou vice-versa),
-    // limpa o filtro de contraparte automaticamente
     if (typeF === 'credit' && data.creditCount === 0) {
       filterCounterparty.value = '';
     } else if (typeF === 'debit' && data.debitCount === 0) {
@@ -1393,6 +1646,7 @@ function setupFilters() {
   document.getElementById('page-next').addEventListener('click', () => goToPage(state.currentPage + 1));
   document.getElementById('page-last').addEventListener('click', () => goToPage(totalPages()));
 
+  // Botão Limpar
   clearBtn.addEventListener('click', () => {
     filterType.value = 'all';
     filterStart.value = '';
@@ -1439,6 +1693,37 @@ function initFlatpickr() {
     console.warn('Flatpickr não carregou — mantendo input de texto simples.');
     return;
   }
+
+  // Constrói inputMask visual dinâmica: máxima "dd/mm/aaaa HH:MM" (16 chars).
+  // Aceita apenas dígitos, "/", ":" e espaço. Também garante maxlength.
+  const enforceInput = (el) => {
+    if (el.dataset.inputEnforced === 'true') return;
+    el.setAttribute('maxlength', '16');
+    el.setAttribute('inputmode', 'numeric');
+    el.setAttribute('autocomplete', 'off');
+    el.setAttribute('placeholder', 'dd/mm/aaaa HH:MM');
+    el.addEventListener('keydown', (ev) => {
+      // Permite teclas de controle
+      if (ev.key.length > 1) return; // Backspace, Arrow, Tab, etc.
+      if (ev.ctrlKey || ev.metaKey) return; // Ctrl+A, Ctrl+C, etc.
+      // Só aceita dígitos, "/", ":" e espaço
+      if (!/^[0-9/: ]$/.test(ev.key)) {
+        ev.preventDefault();
+      }
+    });
+    el.addEventListener('paste', (ev) => {
+      const text = (ev.clipboardData || window.clipboardData).getData('text');
+      if (!/^[0-9/: ]*$/.test(text)) ev.preventDefault();
+    });
+    el.dataset.inputEnforced = 'true';
+  };
+  enforceInput(filterStart);
+  enforceInput(filterEnd);
+
+  // Destroy instâncias anteriores para evitar duplicação em setup subsequentes
+  if (flatpickrInstances.start) { try { flatpickrInstances.start.destroy(); } catch (_) {} }
+  if (flatpickrInstances.end)   { try { flatpickrInstances.end.destroy();   } catch (_) {} }
+
   const commonOpts = {
     enableTime: true,
     time_24hr: true,
@@ -1446,6 +1731,9 @@ function initFlatpickr() {
     minuteIncrement: 1,
     allowInput: true,   // permite digitar manualmente
     clickOpens: false,  // NÃO abre ao clicar no input (só pelo botão)
+    // showMonths:2 mostra dois meses lado a lado (≈ 60 dias visíveis),
+    // resposta ao pedido do usuário de calendário maior/mais amplo.
+    showMonths: 2,
     locale: (window.flatpickr && window.flatpickr.l10ns && window.flatpickr.l10ns.pt) || 'default',
     // Dispara 'change' no input original para acionar applyFilters()
     onChange: function(_selDates, _dateStr, instance) {
@@ -1461,22 +1749,24 @@ function initFlatpickr() {
     defaultDate: filterEnd.value || null,
   });
 
-  // Botões-calendário abrem o picker manualmente
+  // Botões-calendário abrem o picker manualmente (guard para não duplicar listener)
   const btnStart = document.getElementById('filter-start-cal');
   const btnEnd = document.getElementById('filter-end-cal');
-  if (btnStart) {
+  if (btnStart && btnStart.dataset.wired !== 'true') {
     btnStart.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       if (flatpickrInstances.start) flatpickrInstances.start.open();
     });
+    btnStart.dataset.wired = 'true';
   }
-  if (btnEnd) {
+  if (btnEnd && btnEnd.dataset.wired !== 'true') {
     btnEnd.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       if (flatpickrInstances.end) flatpickrInstances.end.open();
     });
+    btnEnd.dataset.wired = 'true';
   }
 }
 
@@ -2004,6 +2294,27 @@ function renderTable() {
   const endIdx = Math.min(startIdx + state.pageSize, total);
   const pageItems = state.filtered.slice(startIdx, endIdx);
 
+  // Detecta "primeiras linhas" de cada arquivo OFX ANEXADO (não o primary)
+  // dentro do state.filtered atual. Isso destaca visualmente onde começam
+  // as transações vindas de cada arquivo carregado por Anexar.
+  const firstRowIds = new Set();
+  if (state.ofxFiles.length >= 2) {
+    // Percorre state.filtered NA ORDEM atual (respeitando ordenação do usuário).
+    // Para cada arquivo anexo, encontra a PRIMEIRA transação daquele sourceFile.
+    const seenSources = new Set();
+    for (const t of state.filtered) {
+      const src = t.sourceFile || '';
+      if (!src) continue;
+      if (seenSources.has(src)) continue;
+      seenSources.add(src);
+      // Só destaca se o arquivo é ANEXO (não o primary)
+      const entry = state.ofxFiles.find((f) => f.name === src);
+      if (entry && !entry.isPrimary) {
+        firstRowIds.add(t.id);
+      }
+    }
+  }
+
   // Renderização desktop (tabela)
   const dash = '<span class="text-gray-300 dark:text-slate-600">-</span>';
   tbody.innerHTML = pageItems
@@ -2029,10 +2340,18 @@ function renderTable() {
         ? `<span class="badge badge-sm badge-boleto" title="${escapeHtml(t.boletoReason || 'Boleto')}"><i class="fas fa-barcode mr-1"></i>${escapeHtml(t.boletoReason || 'Boleto')}</span>`
         : '';
       const isSelected = state.selectedIds.has(t.id);
-      const rowClass = isSelected
+      const isFirstOfAppendedOfx = firstRowIds.has(t.id);
+      const baseRowClass = isSelected
         ? 'bg-blue-50 dark:bg-blue-900/20'
         : (t.isReversal ? 'bg-amber-50/40 dark:bg-amber-900/10'
           : (t.isBoleto ? 'bg-blue-50/40 dark:bg-blue-900/10' : ''));
+      const rowClass = isFirstOfAppendedOfx
+        ? `${baseRowClass} new-ofx-row`.trim()
+        : baseRowClass;
+      // Tooltip mostrando o arquivo de origem (útil para debug/rastreio)
+      const rowTitle = t.sourceFile
+        ? ` title="Origem: ${escapeHtml(t.sourceFile)}"`
+        : '';
       const balBefore = t.balanceBefore != null
         ? `<span class="text-gray-600 dark:text-slate-300">${formatCurrency(t.balanceBefore)}</span>`
         : dash;
@@ -2047,32 +2366,31 @@ function renderTable() {
         ? `<span class="text-amber-800 dark:text-amber-200 font-medium" title="Contraparte da transação original">${escapeHtml(t.reversalRecipient)}</span>`
         : (t.isReversal ? '<span class="text-gray-400 dark:text-slate-500 italic text-xs">Não identificado</span>' : dash);
 
-      // Coluna TxId / EndToEnd — os identificadores do comprovante:
-      //  - TxId    = REFNUM do OFX (ID da instituição, ex: SE0003...,
-      //              CIELO..., mpqrinter...). Aparece SEMPRE quando o
-      //              OFX tem REFNUM. Fallback: FITID.
-      //  - E2E     = EndToEndId BACEN (E\d{31,32}). Só aparece quando
-      //              o OFX contém o padrão E2E BACEN (raro em Nubank/
-      //              InfoPago — o app do banco busca em API separada).
+      // Coluna E2E — EndToEndId BACEN (E<32>). SEMPRE preenchido:
+      //   - Se o OFX trouxe o E2E real  → cor verde/azul + rótulo REAL
+      //   - Se foi derivado por nós    → cor cinza + rótulo DERIVADO
       let txIdCell = dash;
-      if (t.txId || t.endToEnd) {
-        const lines = [];
-        if (t.endToEnd) {
-          // E2E BACEN em destaque quando existe (é o identificador
-          // mais autoritativo — funciona pra qualquer banco).
-          lines.push(`<div class="text-[11px] text-blue-300 font-mono break-all" title="EndToEndId BACEN — identificador universal do PIX. Serve para consulta em qualquer banco."><span class="text-[9px] text-blue-400/70 font-sans uppercase mr-1 tracking-wide">E2E</span>${escapeHtml(t.endToEnd)}</div>`);
-        }
-        if (t.txId) {
-          lines.push(`<div class="text-[11px] text-slate-200 font-mono break-all" title="TxId — ID da transação na instituição financeira (aparece no comprovante do banco)."><span class="text-[9px] text-slate-500 font-sans uppercase mr-1 tracking-wide">TxId</span>${escapeHtml(t.txId)}</div>`);
-        }
-        txIdCell = `<div class="space-y-0.5 max-w-[220px]">${lines.join('')}</div>`;
+      if (t.endToEnd) {
+        const isReal = t.endToEndSource === 'real';
+        const badgeColor = isReal
+          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+          : 'bg-slate-500/20 text-slate-400 border-slate-500/40';
+        const badgeLabel = isReal ? 'E2E' : 'E2E*';
+        const badgeTitle = isReal
+          ? 'EndToEndId BACEN extraído diretamente do OFX (identificador universal do PIX)'
+          : 'EndToEndId BACEN DERIVADO (o OFX deste banco não exporta o E2E real; este identificador foi calculado a partir do ISPB do banco + data/hora + hash do FITID e é estável para a mesma transação)';
+        const valueColor = isReal ? 'text-emerald-200' : 'text-slate-300';
+        txIdCell = `<div class="max-w-[220px]" title="${escapeHtml(badgeTitle)}">
+          <span class="inline-block px-1 py-[1px] mb-0.5 text-[8.5px] font-sans font-semibold uppercase tracking-wide rounded border ${badgeColor}">${badgeLabel}</span>
+          <div class="text-[10.5px] ${valueColor} font-mono break-all leading-tight">${escapeHtml(t.endToEnd)}</div>
+        </div>`;
       }
 
       // Todas as células centralizadas horizontalmente (requisito do
       // usuário: "centralize o texto das colunas"). Valores e saldos
       // ficam à direita do centro dentro da célula pela natureza numérica.
       return `
-        <tr class="${rowClass}">
+        <tr class="${rowClass}"${rowTitle}>
           <td class="px-2 py-3 text-center align-middle">
             <input type="checkbox" class="row-checkbox rounded border-gray-300 dark:border-slate-500 text-blue-600 focus:ring-blue-500 cursor-pointer" data-id="${escapeHtml(t.id)}" ${isSelected ? 'checked' : ''} />
           </td>
@@ -3573,17 +3891,22 @@ function mergeSequentialOFX(parsed, filename) {
   // Detecta relação temporal entre as duas janelas
   const analysis = analyzeRanges(curStart, curEnd, newStart, newEnd);
 
+  // Marca as novas transações com o filename de origem (para painel + highlight)
+  newTxns.forEach((t) => { t.sourceFile = filename; });
+
   // Mescla e deduplica por FITID
   const seen = new Set();
   const combined = [];
-  const pushUnique = (t) => {
+  const addedTxnIds = [];  // IDs efetivamente adicionados (não-duplicatas)
+  const pushUnique = (t, isNew) => {
     const key = t.fitId || t.id;
     if (seen.has(key)) return;
     seen.add(key);
     combined.push(t);
+    if (isNew) addedTxnIds.push(t.id);
   };
-  state.transactions.forEach(pushUnique);
-  newTxns.forEach(pushUnique);
+  state.transactions.forEach((t) => pushUnique(t, false));
+  newTxns.forEach((t) => pushUnique(t, true));
 
   // Reordena por data para o cálculo de saldo funcionar
   combined.sort((a, b) => (a.date?.getTime() || 0) - (b.date?.getTime() || 0));
@@ -3615,8 +3938,21 @@ function mergeSequentialOFX(parsed, filename) {
   state.filtered = [...combined];
   state.appendedFiles++;
 
-  // Reabre o dashboard com os dados mesclados
-  renderDashboard();
+  // Adiciona o arquivo à lista de OFX carregados (painel + botão Reverter)
+  state.ofxFiles.push({
+    name: filename,
+    addedAt: new Date(),
+    count: addedTxnIds.length,
+    duplicates: duplicates,
+    txnIds: addedTxnIds,
+    startDate: newStart,
+    endDate: newEnd,
+    isPrimary: false,
+    analysisType: analysis.type,
+  });
+
+  // Reabre o dashboard com os dados mesclados (NÃO é primary — preserva filtros)
+  renderDashboard({ isPrimary: false });
 
   // Monta o alerta com o resumo
   const parts = [];

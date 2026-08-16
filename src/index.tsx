@@ -101,6 +101,20 @@ app.get('/', (c) => {
           {/* Alerta de divergência entre extratos anexados */}
           <div id="append-alert" class="hidden mb-4 sm:mb-6 rounded-xl border p-4" role="alert"></div>
 
+          {/* Lista de arquivos OFX carregados (aparece só quando há 2+) */}
+          <div id="ofx-files-wrapper" class="hidden mb-4 sm:mb-6 bg-white dark:bg-slate-800 rounded-xl shadow-md p-4">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-sm font-bold text-gray-800 dark:text-slate-100 flex items-center gap-2">
+                <i class="fas fa-folder-open text-blue-600 dark:text-blue-400"></i>
+                Arquivos OFX carregados
+              </h3>
+              <span class="text-xs text-gray-500 dark:text-slate-400">
+                Clique em <span class="font-semibold text-red-600 dark:text-red-400">Reverter</span> para desfazer um anexo
+              </span>
+            </div>
+            <div id="ofx-files-list"></div>
+          </div>
+
           {/* Account Info */}
           <div id="account-info" class="collapsible bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
             <div class="flex items-center justify-between mb-3">
@@ -164,7 +178,7 @@ app.get('/', (c) => {
           </div>
           </div>{/* /summary block */}
 
-          {/* Percentage Calculator */}
+          {/* Percentage Calculator v2 — layout padronizado e mais explicativo */}
           <div class="draggable-block" data-block-id="calc">
           <div class="block-drag-handle" title="Arrastar para reordenar">
             <i class="fas fa-grip-vertical"></i>
@@ -172,9 +186,14 @@ app.get('/', (c) => {
           </div>
           <div class="collapsible bg-white dark:bg-slate-800 rounded-xl shadow-md p-4 sm:p-6 mb-4 sm:mb-6">
             <div class="flex items-center justify-between mb-3 sm:mb-4">
-              <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100">
-                <i class="fas fa-calculator text-blue-600 dark:text-blue-400 mr-2"></i>Calculadora de Porcentagem
-              </h2>
+              <div class="flex items-baseline gap-2 flex-wrap">
+                <h2 class="text-base sm:text-lg font-bold text-gray-800 dark:text-slate-100">
+                  <i class="fas fa-calculator text-blue-600 dark:text-blue-400 mr-2"></i>Calculadora de Porcentagem
+                </h2>
+                <span class="text-xs text-gray-500 dark:text-slate-400 hidden sm:inline">
+                  · rápida para conferência de valores
+                </span>
+              </div>
               <button
                 type="button"
                 class="collapse-toggle text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 flex items-center gap-1"
@@ -185,66 +204,71 @@ app.get('/', (c) => {
               </button>
             </div>
             <div id="calc-body" class="collapsible-body">
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
-              <div>
-                <label class="block text-xs font-semibold text-gray-600 dark:text-slate-300 mb-1">
-                  Valor (R$)
-                </label>
-                <input
-                  type="text"
-                  inputmode="decimal"
-                  id="calc-value"
-                  placeholder="10.000,00"
-                  class="w-full border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-900 dark:text-slate-100 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-gray-600 dark:text-slate-300 mb-1">
-                  Operação
-                </label>
-                <select
-                  id="calc-op"
-                  class="w-full border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-900 dark:text-slate-100 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="of">% de (X% do valor)</option>
-                  <option value="add">Acrescentar % (juros/aumento)</option>
-                  <option value="sub">Descontar % (desconto)</option>
-                  <option value="ratio">Qual % (A é % de B)</option>
-                </select>
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-gray-600 dark:text-slate-300 mb-1">
-                  <span id="calc-second-label">Porcentagem (%)</span>
-                </label>
-                <input
-                  type="text"
-                  inputmode="decimal"
-                  id="calc-percent"
-                  placeholder="10"
-                  class="w-full border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-900 dark:text-slate-100 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-gray-600 dark:text-slate-300 mb-1">
-                  Resultado
-                </label>
-                <div
-                  id="calc-result"
-                  class="w-full border-2 border-blue-500 bg-blue-50 dark:bg-blue-900/40 rounded-lg px-3 py-2 text-base sm:text-lg font-bold text-blue-700 dark:text-blue-300"
-                >
-                  R$ 0,00
+              {/* 3 blocos padronizados: (1) Operação  (2) Entradas  (3) Resultado */}
+              <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                {/* ── Bloco 1: Operação ─────────────────────────────── */}
+                <div class="rounded-lg border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-900/40 p-3">
+                  <div class="calc-field-label mb-2"><i class="fas fa-cog mr-1"></i>Operação</div>
+                  <select
+                    id="calc-op"
+                    class="w-full border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-900 dark:text-slate-100 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="of">% de (quanto é X% do valor)</option>
+                    <option value="add">Acrescentar % (juros / aumento)</option>
+                    <option value="sub">Descontar % (desconto)</option>
+                    <option value="ratio">Qual % (A é % de B)</option>
+                  </select>
+                  <div class="mt-2 text-[11px] text-gray-500 dark:text-slate-400 leading-4">
+                    Escolha o que quer calcular. A ordem dos campos <b>Valor</b> e o rótulo mudam de acordo.
+                  </div>
                 </div>
-                {/* Detalhe R$ ↔ % — mostrado apenas na operação "Qual % (A é % de B)"
-                    para dar contexto visual em reais dos dois valores. */}
-                <div id="calc-detail" class="hidden mt-2 text-xs text-gray-600 dark:text-slate-400 leading-5 bg-gray-50 dark:bg-slate-900/40 border border-gray-200 dark:border-slate-700 rounded-lg px-3 py-2"></div>
+
+                {/* ── Bloco 2: Entradas ─────────────────────────────── */}
+                <div class="rounded-lg border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-900/40 p-3">
+                  <div class="calc-field-label mb-2"><i class="fas fa-keyboard mr-1"></i>Entradas</div>
+                  <div class="calc-v2">
+                    <div class="calc-field">
+                      <label class="calc-field-label">Valor (R$)</label>
+                      <input
+                        type="text"
+                        inputmode="decimal"
+                        id="calc-value"
+                        placeholder="10.000,00"
+                        class="w-full border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-900 dark:text-slate-100 rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                    </div>
+                    <div class="calc-field">
+                      <label class="calc-field-label" id="calc-second-label">Porcentagem (%)</label>
+                      <input
+                        type="text"
+                        inputmode="decimal"
+                        id="calc-percent"
+                        placeholder="10"
+                        class="w-full border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-900 dark:text-slate-100 rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+                  <div class="mt-2 text-[11px] text-gray-500 dark:text-slate-400 leading-4">
+                    Aceita formato BR: <code class="bg-gray-200 dark:bg-slate-700 px-1 rounded">10.000,00</code>, <code class="bg-gray-200 dark:bg-slate-700 px-1 rounded">R$ 10.000,00</code>.
+                  </div>
+                </div>
+
+                {/* ── Bloco 3: Resultado ────────────────────────────── */}
+                <div class="rounded-lg border-2 border-blue-500/60 dark:border-blue-500/50 bg-blue-50/70 dark:bg-blue-900/25 p-3">
+                  <div class="calc-result-label mb-1"><i class="fas fa-equals mr-1"></i>Resultado</div>
+                  <div id="calc-result" class="calc-result-value text-blue-700 dark:text-blue-200">R$ 0,00</div>
+                  {/* Detalhe R$ ↔ % — mostrado apenas na operação "Qual % (A é % de B)" */}
+                  <div id="calc-detail" class="hidden mt-2 text-xs text-gray-600 dark:text-slate-300 leading-5 bg-white dark:bg-slate-900/40 border border-gray-200 dark:border-slate-700 rounded-md px-2.5 py-1.5"></div>
+                </div>
               </div>
-            </div>
-            <p class="text-xs text-gray-500 dark:text-slate-400 mt-3">
-              <i class="fas fa-info-circle mr-1"></i>
-              <span id="calc-hint">
-                Aceita valores no formato brasileiro: <code class="bg-gray-100 dark:bg-slate-700 px-1 rounded">10.000,00</code> ou <code class="bg-gray-100 dark:bg-slate-700 px-1 rounded">R$ 10.000,00</code>
-              </span>
-            </p>
+
+              {/* Dica com exemplo dinâmico (atualizada conforme operação escolhida) */}
+              <div class="calc-hint-box mt-3">
+                <i class="fas fa-lightbulb mr-1"></i>
+                <span id="calc-hint">
+                  Aceita valores no formato brasileiro: <code>10.000,00</code> ou <code>R$ 10.000,00</code>
+                </span>
+              </div>
             </div>
           </div>
           </div>{/* /calc block */}
@@ -609,7 +633,7 @@ app.get('/', (c) => {
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Descrição</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Conta Destino/Origem</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="Nome do destinatário original da transação estornada/devolvida">Destinatário Estorno</th>
-                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="TxId = ID da instituição (aparece no comprovante). E2E = EndToEndId BACEN (padrão do PIX). Ambos servem para buscar/identificar a transação.">TxId / EndToEnd</th>
+                    <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="E2E = EndToEndId BACEN (E + ISPB + data + hash) — identificador universal do PIX que aparece no comprovante como 'ID da transação' (Nubank/Itaú), 'Autenticação' (InfoPago/Itaú) ou 'Número de Controle' (Bradesco).">E2E</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Valor</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Antes</th>
                     <th class="text-center px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Após</th>

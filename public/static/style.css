@@ -140,6 +140,122 @@ html:not(.dark) {
   color: #93c5fd;
 }
 
+/* ============================================================
+   PRIMEIRA LINHA DE OFX ANEXADO
+   Destaque translúcido na primeira transação de cada arquivo
+   anexado (por Anexar OFX), para o usuário identificar onde
+   começam os dados de cada arquivo adicional.
+   ============================================================ */
+.new-ofx-row {
+  position: relative;
+  box-shadow: inset 3px 0 0 0 #38bdf8; /* borda azul-claro na esquerda */
+}
+.new-ofx-row td:first-child {
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.20) 0%, rgba(56, 189, 248, 0.05) 60%, transparent 100%);
+}
+.new-ofx-row td:not(:first-child) {
+  background: rgba(56, 189, 248, 0.06);
+}
+.dark .new-ofx-row {
+  box-shadow: inset 3px 0 0 0 #0ea5e9;
+}
+.dark .new-ofx-row td:first-child {
+  background: linear-gradient(90deg, rgba(14, 165, 233, 0.25) 0%, rgba(14, 165, 233, 0.08) 60%, transparent 100%);
+}
+.dark .new-ofx-row td:not(:first-child) {
+  background: rgba(14, 165, 233, 0.08);
+}
+
+/* ============================================================
+   PAINEL DE ARQUIVOS OFX (lista com botão Reverter)
+   ============================================================ */
+#ofx-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.revert-ofx-btn {
+  font-weight: 500;
+  transition: all 0.15s ease-in-out;
+  white-space: nowrap;
+}
+.revert-ofx-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* ============================================================
+   CALCULADORA % v2 — bloco mais explicativo e padronizado
+   ============================================================ */
+.calc-v2 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+@media (min-width: 640px) {
+  .calc-v2 {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.calc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.calc-field-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+.dark .calc-field-label {
+  color: #94a3b8;
+}
+.calc-result-box {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px dashed #cbd5e1;
+  background: rgba(148, 163, 184, 0.06);
+}
+.dark .calc-result-box {
+  border-color: #475569;
+  background: rgba(30, 41, 59, 0.4);
+}
+.calc-result-label {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.dark .calc-result-label {
+  color: #94a3b8;
+}
+.calc-result-value {
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #0f172a;
+  margin-top: 2px;
+}
+.dark .calc-result-value {
+  color: #f1f5f9;
+}
+.calc-hint-box {
+  font-size: 11.5px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.06);
+  border-left: 3px solid #3b82f6;
+  color: #334155;
+  line-height: 1.5;
+}
+.dark .calc-hint-box {
+  background: rgba(59, 130, 246, 0.12);
+  color: #cbd5e1;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
