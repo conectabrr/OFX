@@ -246,7 +246,19 @@ function parseOFX(content) {
       isBoleto,                                // boolean: é pagamento de boleto/título?
       boletoReason,                            // ex: "Boleto", "Título", "DDA", "Ticket"
       isPix,                                   // boolean: é transação PIX?
-      originalTxRef,                           // "Transação #NNNNN" extraído do MEMO
+      // Identificadores da transação (o que aparece no comprovante):
+      //  - fitId  : TxId interno do OFX/banco (sempre existe)
+      //  - refNum : EndToEndId do PIX quando disponível (é o identificador
+      //             oficial BACEN que consta no comprovante; ex: "CIELO202608..."
+      //             ou "E{ISPB}...", "SE00...", "mpqrinter...").
+      // O "Transação #NNNNN" que aparecia no MEMO é uma referência INTERNA
+      // do Nubank/Itaú e NÃO é o EndToEnd — foi removido da UI.
+      fitId,                                   // TxId do OFX
+      refNum,                                  // EndToEndId do PIX (quando existir)
+      // originalTxRef ainda é útil INTERNAMENTE para resolver o
+      // destinatário do estorno (bancos usam essa referência para casar
+      // estorno⇄original), mas NÃO é exibido como identificador da transação.
+      originalTxRef,
       // Chave de agrupamento normalizada para o painel de "Movimentos".
       // PIX: usa APENAS o nome normalizado (sem identificadores únicos),
       // caso contrário mesmo destinatário aparece em cards separados por txId.
@@ -1323,22 +1335,19 @@ function populateCounterpartyList() {
 }
 
 /**
- * Renderiza o painel de "Movimentos" com cards translúcidos.
+ * Renderiza o painel de "Movimentos" — versão SIMPLIFICADA (dois cards).
  *
- * Regra de visibilidade dos cards (por pedido do usuário):
- *  - Só mostra cards PUROS: verde (só créditos) OU vermelho (só débitos).
- *  - Cards MISTOS (contraparte com créditos E débitos) ficam OCULTOS,
- *    pois seriam a mesma contraparte contada duas vezes.
- *  - Contorno azul: card atualmente selecionado como filtro.
+ * Só existem DOIS cards fixos:
+ *   1) Card Crédito (verde)  — total e contagem de todos os créditos.
+ *   2) Card Débito (vermelho) — total e contagem de todos os débitos.
  *
- * Cada card mostra:
- *  - Nome + badge de estornos (se houver)
- *  - Contagem de transações
- *  - Total crédito OU débito (respectivamente à cor)
- *  - Linha "Estorno de:" / "Devolvido para:" quando houver estornos
- *    com destinatário original identificado.
+ * A lista detalhada por contraparte foi removida do painel principal
+ * (a pedido do usuário). Para ver as contrapartes individuais o usuário
+ * usa o autocomplete do filtro "Conta Destino/Origem" (mantido para busca).
  *
- * Atualiza também o datalist do autocomplete com o mesmo escopo.
+ * Cada card funciona como um filtro por tipo: clicar no card Crédito
+ * aplica typeFilter='credit', clicar no Débito aplica typeFilter='debit',
+ * clicar novamente no card já ativo volta para 'all'.
  */
 function renderCounterpartyPanel() {
   const panel = document.getElementById('counterparty-panel');
@@ -1348,56 +1357,39 @@ function renderCounterpartyPanel() {
   const typeFilter = filterType.value; // 'all' | 'credit' | 'debit'
   const reversalOnly = state.reversalOnlyMode;
 
-  // Filtra a lista pela tipagem selecionada.
-  //
-  // Regra de exibição (nova):
-  //   - typeFilter === 'credit' → mostra APENAS cards puramente crédito
-  //     (debitCount === 0). Movimentos mistos ficam ocultos.
-  //   - typeFilter === 'debit'  → mostra APENAS cards puramente débito
-  //     (creditCount === 0).
-  //   - typeFilter === 'all'    → mostra cards puramente crédito OU
-  //     puramente débito (cards MISTOS ficam ocultos).
-  //   - reversalOnly (toggle "Somente estornos") tem prioridade e ignora
-  //     a regra acima — só filtra por reversalCount > 0.
-  let scoped = (state.counterpartyList || []).filter(([, data]) => {
-    if (reversalOnly) return data.reversalCount > 0;
-    if (typeFilter === 'credit') return data.creditCount > 0 && data.debitCount === 0;
-    if (typeFilter === 'debit')  return data.debitCount > 0 && data.creditCount === 0;
-    // typeFilter === 'all': só cards puros (verde OU vermelho, nunca misto)
-    return (data.creditCount > 0 && data.debitCount === 0) ||
-           (data.debitCount > 0 && data.creditCount === 0);
+  // === Agrega TODAS as transações do extrato (não por contraparte) ===
+  // Usamos state.transactions diretamente — os totais por tipo aqui são
+  // o que o comprovante bancário mostraria: soma de créditos e débitos
+  // brutos, sem consolidação por contraparte.
+  let creditCount = 0;
+  let debitCount = 0;
+  let totalCredit = 0;
+  let totalDebit = 0;
+  let reversalCount = 0;
+  let reversalCreditCount = 0;
+  let reversalDebitCount = 0;
+  let totalReversal = 0;
+
+  (state.transactions || []).forEach((t) => {
+    if (t.type === 'credit') {
+      creditCount++;
+      totalCredit += t.amount;
+    } else {
+      debitCount++;
+      totalDebit += t.absAmount;
+    }
+    if (t.isReversal) {
+      reversalCount++;
+      totalReversal += t.absAmount;
+      if (t.type === 'credit') reversalCreditCount++;
+      else reversalDebitCount++;
+    }
   });
 
-  // === TOTAIS AGREGADOS do escopo visível ===
-  // Calcula o total geral de crédito e débito considerando SOMENTE os
-  // cards que estão sendo exibidos (respeitando o filtro atual).
-  // Estes totais aparecem no cabeçalho do painel para dar visão macro.
-  let panelTotalCredit = 0;
-  let panelTotalDebit = 0;
-  let panelTotalReversal = 0;
-  scoped.forEach(([, data]) => {
-    panelTotalCredit += data.totalCredit || 0;
-    panelTotalDebit += data.totalDebit || 0;
-    panelTotalReversal += data.totalReversal || 0;
-  });
-  const totalsEl = document.getElementById('counterparty-totals');
-  if (totalsEl) {
-    const parts = [];
-    if (panelTotalCredit > 0) {
-      parts.push(`<span class="text-green-400 font-semibold" title="Total de créditos nos cards visíveis"><i class="fas fa-arrow-up mr-1"></i>${formatCurrency(panelTotalCredit)}</span>`);
-    }
-    if (panelTotalDebit > 0) {
-      parts.push(`<span class="text-red-400 font-semibold" title="Total de débitos nos cards visíveis"><i class="fas fa-arrow-down mr-1"></i>${formatCurrency(panelTotalDebit)}</span>`);
-    }
-    if (reversalOnly && panelTotalReversal > 0) {
-      parts.push(`<span class="text-amber-400 font-semibold" title="Total de estornos"><i class="fas fa-undo mr-1"></i>${formatCurrency(panelTotalReversal)}</span>`);
-    }
-    totalsEl.innerHTML = parts.join('<span class="mx-2 text-slate-600">·</span>');
-  }
-
-  // Atualiza datalist do input (para autocomplete)
-  if (counterpartyList) {
-    counterpartyList.innerHTML = scoped
+  // Popula datalist do autocomplete com TODAS as contrapartes conhecidas
+  // (o filtro Conta Destino/Origem continua sendo por contraparte).
+  if (counterpartyList && state.counterpartyList) {
+    counterpartyList.innerHTML = state.counterpartyList
       .map(([name, data]) => {
         const info =
           typeFilter === 'credit'
@@ -1410,135 +1402,82 @@ function renderCounterpartyPanel() {
       .join('');
   }
 
-  if (scoped.length === 0) {
-    const emptyMsg = reversalOnly
-      ? 'Nenhum estorno neste extrato.'
-      : 'Nenhum movimento encontrado para este tipo.';
-    panel.innerHTML = `<p class="text-xs text-slate-400 italic p-2 col-span-full">${emptyMsg}</p>`;
-    if (countLabel) countLabel.textContent = '';
-    return;
-  }
-  if (countLabel) {
-    const total = state.counterpartyList.length;
-    const shown = scoped.length;
-    if (reversalOnly) {
-      countLabel.textContent = `(${shown} com estornos)`;
-    } else {
-      countLabel.textContent =
-        typeFilter === 'all' ? `(${total})` : `(${shown} de ${total})`;
+  // === Cabeçalho: totais gerais (independentes do filtro) ===
+  const totalsEl = document.getElementById('counterparty-totals');
+  if (totalsEl) {
+    const parts = [];
+    if (totalCredit > 0) {
+      parts.push(`<span class="text-green-400 font-semibold" title="${creditCount} crédito(s)"><i class="fas fa-arrow-up mr-1"></i>${formatCurrency(totalCredit)}</span>`);
     }
+    if (totalDebit > 0) {
+      parts.push(`<span class="text-red-400 font-semibold" title="${debitCount} débito(s)"><i class="fas fa-arrow-down mr-1"></i>${formatCurrency(totalDebit)}</span>`);
+    }
+    if (reversalCount > 0) {
+      parts.push(`<span class="text-amber-400 font-semibold" title="${reversalCount} estorno(s)"><i class="fas fa-undo mr-1"></i>${formatCurrency(totalReversal)}</span>`);
+    }
+    totalsEl.innerHTML = parts.join('<span class="mx-2 text-slate-600">·</span>');
   }
 
-  const currentFilter = filterCounterparty.value.trim().toLowerCase();
-  panel.innerHTML = scoped
-    .map(([name, data]) => {
-      const isActive = currentFilter && name.toLowerCase() === currentFilter;
+  // === Rótulo de contagem no cabeçalho ===
+  if (countLabel) {
+    const total = (state.transactions || []).length;
+    countLabel.textContent = `(${total} transações)`;
+  }
 
-      // === Escolhe a variante visual do card ===
-      // Verde: só créditos (creditCount > 0 e debitCount === 0)
-      // Vermelho: só débitos
-      // Neutro: misto (ambos)
-      let variantClass = 'mv-mixed';
-      if (data.creditCount > 0 && data.debitCount === 0) {
-        variantClass = 'mv-credit';
-      } else if (data.debitCount > 0 && data.creditCount === 0) {
-        variantClass = 'mv-debit';
-      }
-      if (isActive) variantClass += ' mv-active';
+  // === Renderiza APENAS 2 cards: Crédito e Débito ===
+  const cards = [];
+  const creditActive = typeFilter === 'credit';
+  const debitActive = typeFilter === 'debit';
 
-      // === Constrói os totais exibidos ===
-      const totals = [];
-      if (reversalOnly) {
-        // Modo "somente estornos": mostra apenas o total de estornos
-        totals.push(
-          `<span class="mv-total-reversal" title="Estornos/devoluções"><i class="fas fa-undo mr-1"></i>${formatCurrency(
-            data.totalReversal
-          )}</span>`
-        );
-      } else {
-        // Modo normal
-        if (typeFilter !== 'debit' && data.totalCredit > 0) {
-          totals.push(
-            `<span class="mv-total-credit" title="${data.creditCount} crédito(s)"><i class="fas fa-arrow-up mr-1"></i>${formatCurrency(
-              data.totalCredit
-            )}</span>`
-          );
-        }
-        if (typeFilter !== 'credit' && data.totalDebit > 0) {
-          totals.push(
-            `<span class="mv-total-debit" title="${data.debitCount} débito(s)"><i class="fas fa-arrow-down mr-1"></i>${formatCurrency(
-              data.totalDebit
-            )}</span>`
-          );
-        }
-      }
+  cards.push(`
+    <button type="button" data-filter="credit"
+      class="movement-card mv-credit ${creditActive ? 'mv-active' : ''}"
+      title="Ver apenas créditos">
+      <span class="mv-name">
+        <i class="fas fa-arrow-up mr-1"></i>Créditos
+        ${reversalCreditCount > 0
+          ? `<span class="badge badge-reversal align-middle ml-1" title="${reversalCreditCount} estorno(s)"><i class="fas fa-undo mr-0.5"></i>${reversalCreditCount}</span>`
+          : ''}
+      </span>
+      <div class="mv-meta">
+        <span class="whitespace-nowrap"><i class="fas fa-hashtag mr-1 opacity-60"></i>${creditCount} transações</span>
+        <div class="mv-totals">
+          <span class="mv-total-credit">${formatCurrency(totalCredit)}</span>
+        </div>
+      </div>
+    </button>
+  `);
 
-      const shownCount = reversalOnly
-        ? data.reversalCount
-        : typeFilter === 'credit'
-          ? data.creditCount
-          : typeFilter === 'debit'
-          ? data.debitCount
-          : data.count;
+  cards.push(`
+    <button type="button" data-filter="debit"
+      class="movement-card mv-debit ${debitActive ? 'mv-active' : ''}"
+      title="Ver apenas débitos">
+      <span class="mv-name">
+        <i class="fas fa-arrow-down mr-1"></i>Débitos
+        ${reversalDebitCount > 0
+          ? `<span class="badge badge-reversal align-middle ml-1" title="${reversalDebitCount} devolução(ões)"><i class="fas fa-undo mr-0.5"></i>${reversalDebitCount}</span>`
+          : ''}
+      </span>
+      <div class="mv-meta">
+        <span class="whitespace-nowrap"><i class="fas fa-hashtag mr-1 opacity-60"></i>${debitCount} transações</span>
+        <div class="mv-totals">
+          <span class="mv-total-debit">${formatCurrency(totalDebit)}</span>
+        </div>
+      </div>
+    </button>
+  `);
 
-      // Badge de estorno (independente do tipo) — inclui breakdown crédito/débito
-      let reversalBadge = '';
-      if (data.reversalCount > 0) {
-        const parts = [];
-        if (data.reversalCreditCount > 0) parts.push(`${data.reversalCreditCount} crédito(s)`);
-        if (data.reversalDebitCount > 0) parts.push(`${data.reversalDebitCount} débito(s)`);
-        const badgeTitle = `${data.reversalCount} estorno(s): ${parts.join(', ')}`;
-        reversalBadge = ` <span class="badge badge-reversal align-middle" title="${escapeHtml(badgeTitle)}"><i class="fas fa-undo mr-0.5"></i>${data.reversalCount}</span>`;
-      }
+  panel.innerHTML = cards.join('');
 
-      // Linha de "quem receberia/recebeu a transação original"
-      // (só aparece se houver reversalRecipients coletados via lookup por
-      // CORRECTFITID ou por Transação #NNNNN no MEMO). Ajuda a identificar
-      // rapidamente PARA QUEM foi a devolução ou DE QUEM veio o estorno.
-      let reversalRecipientsLine = '';
-      if (data.reversalCount > 0 && data.reversalRecipients && data.reversalRecipients.size > 0) {
-        const list = [...data.reversalRecipients];
-        const shown = list.slice(0, 2).map(escapeHtml).join(', ');
-        const extra = list.length > 2 ? ` <span class="opacity-60">+${list.length - 2}</span>` : '';
-        // Rótulo: "Estorno de:" se o card só tem estorno-crédito (recebeu),
-        // "Devolvido para:" se só tem estorno-débito, "Envolvidos:" se misto.
-        let label = 'Envolvidos';
-        if (data.reversalCreditCount > 0 && data.reversalDebitCount === 0) {
-          label = 'Estorno de';
-        } else if (data.reversalDebitCount > 0 && data.reversalCreditCount === 0) {
-          label = 'Devolvido para';
-        }
-        const fullList = list.map(escapeHtml).join(', ');
-        reversalRecipientsLine = `<div class="mv-reversal-recipients" title="${escapeHtml(fullList)}"><i class="fas fa-exchange-alt mr-1"></i>${label}: ${shown}${extra}</div>`;
-      }
-
-      const displayName = data.displayName || name;
-
-      return `
-        <button type="button" data-cp="${escapeHtml(name)}"
-          class="movement-card ${variantClass}" title="${escapeHtml(displayName)}">
-          <span class="mv-name">${escapeHtml(displayName)}${reversalBadge}</span>
-          <div class="mv-meta">
-            <span class="whitespace-nowrap"><i class="fas fa-hashtag mr-1 opacity-60"></i>${shownCount} trans.</span>
-            <div class="mv-totals">${totals.join('')}</div>
-          </div>
-          ${reversalRecipientsLine}
-        </button>`;
-    })
-    .join('');
-
+  // === Clique nos cards → aplica/toggle filtro de tipo ===
   panel.querySelectorAll('.movement-card').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const name = btn.getAttribute('data-cp');
-      // Toggle: se já está selecionado, limpa
-      if (filterCounterparty.value.trim() === name) {
-        filterCounterparty.value = '';
-      } else {
-        filterCounterparty.value = name;
-      }
-      updateCounterpartyClearBtn();
+      const wantedType = btn.getAttribute('data-filter');
+      // Toggle: clicar no já-ativo volta para 'all'
+      filterType.value = (filterType.value === wantedType) ? 'all' : wantedType;
       state.currentPage = 1;
       applyFilters();
+      renderCounterpartyPanel(); // re-render para atualizar mv-active
     });
   });
 }
@@ -1843,15 +1782,24 @@ function renderTable() {
         ? `<span class="text-amber-800 dark:text-amber-200 font-medium" title="Contraparte da transação original">${escapeHtml(t.reversalRecipient)}</span>`
         : (t.isReversal ? '<span class="text-gray-400 dark:text-slate-500 italic text-xs">Não identificado</span>' : dash);
 
-      // Coluna TxId / EndToEnd: prioriza o número da transação PIX
-      // ("Transação #NNNNN") quando disponível, senão usa o FITID
-      // (id interno do OFX). Cada card mostra o texto do que está sendo
-      // exibido no tooltip para desambiguar.
-      const txIdValue = t.originalTxRef || t.id || '';
-      const txIdLabel = t.originalTxRef ? 'EndToEnd (Nº PIX)' : 'FITID (OFX)';
-      const txIdCell = txIdValue
-        ? `<span class="text-xs text-gray-500 dark:text-slate-400 font-mono" title="${txIdLabel}: ${escapeHtml(txIdValue)}">${escapeHtml(txIdValue)}</span>`
-        : dash;
+      // Coluna TxId / EndToEnd: mostra os DOIS identificadores oficiais
+      // do OFX/PIX, exatamente como aparecem no comprovante bancário:
+      //  - REFNUM (EndToEndId do PIX, quando existir): identificador
+      //    BACEN — ex: "CIELO202608...", "SE000...", "E{ISPB}...".
+      //  - FITID (TxId interno do OFX/banco): sempre presente.
+      // Não usamos mais o "#NNNNN" do MEMO — é referência interna do
+      // Nubank e não bate com o comprovante.
+      let txIdCell = dash;
+      if (t.refNum || t.fitId) {
+        const lines = [];
+        if (t.refNum) {
+          lines.push(`<div class="text-[11px] text-blue-300 font-mono" title="EndToEndId do PIX (comprovante BACEN)"><span class="text-[9px] text-blue-400/70 font-sans uppercase mr-1">E2E</span>${escapeHtml(t.refNum)}</div>`);
+        }
+        if (t.fitId) {
+          lines.push(`<div class="text-[11px] text-slate-400 font-mono" title="TxId (FITID do OFX)"><span class="text-[9px] text-slate-500 font-sans uppercase mr-1">TxId</span>${escapeHtml(t.fitId)}</div>`);
+        }
+        txIdCell = `<div class="space-y-0.5">${lines.join('')}</div>`;
+      }
 
       return `
         <tr class="${rowClass}">
@@ -2264,7 +2212,8 @@ const EXPORT_COLUMNS = [
   'Destinatário Estorno',
   'Boleto',
   'Tipo Boleto',
-  'TxId / EndToEnd',
+  'EndToEndId (PIX)',
+  'TxId (FITID)',
   'Valor',
   'Saldo Antes',
   'Saldo Após',
@@ -2285,7 +2234,8 @@ function buildExportRow(t) {
     t.isReversal ? (t.reversalRecipient || '') : '',
     t.isBoleto ? 'Sim' : '',
     t.isBoleto ? (t.boletoReason || 'Boleto') : '',
-    t.originalTxRef || t.id || '',
+    t.refNum || '',
+    t.fitId || t.id || '',
     (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount),
     t.balanceBefore != null ? formatCurrency(t.balanceBefore) : '',
     t.balanceAfter != null ? formatCurrency(t.balanceAfter) : '',
@@ -2485,7 +2435,8 @@ function doExportCSV() {
     t.isReversal ? (t.reversalRecipient || '').replace(/"/g, '""') : '',
     t.isBoleto ? 'Sim' : '',
     t.isBoleto ? (t.boletoReason || 'Boleto') : '',
-    t.originalTxRef || t.id || '',
+    t.refNum || '',
+    t.fitId || t.id || '',
     t.amount.toFixed(2).replace('.', ','),
     t.balanceBefore != null ? t.balanceBefore.toFixed(2).replace('.', ',') : '',
     t.balanceAfter != null ? t.balanceAfter.toFixed(2).replace('.', ',') : '',
@@ -2745,13 +2696,13 @@ function doExportPDF() {
   // ==========================================================================
   // TABELA DE TRANSAÇÕES
   // ==========================================================================
-  // Headers e rows: colunas Motivo Estorno e FITID Original removidas
-  // a pedido do usuário. TxId agora prioriza o EndToEnd (Nº PIX) quando
-  // disponível, com fallback para o FITID interno do OFX.
+  // Headers e rows: identificadores agora em DUAS colunas separadas —
+  // EndToEndId (REFNUM do OFX, é o do comprovante BACEN) e TxId (FITID).
+  // "#NNNNN" do MEMO NÃO é exibido (é referência interna do banco).
   const head = [[
     'Data/Hora', 'Tipo', 'Descrição', 'Conta Destino/Origem',
     'Destinatário Estorno',
-    'TxId / EndToEnd', 'Valor', 'Saldo Antes', 'Saldo Após'
+    'EndToEndId (PIX)', 'TxId', 'Valor', 'Saldo Antes', 'Saldo Após'
   ]];
   const rows = source.map((t) => [
     formatDateTime(t.date),
@@ -2759,7 +2710,8 @@ function doExportPDF() {
     t.description || '',
     t.counterparty || '-',
     t.isReversal ? (t.reversalRecipient || '') : '',
-    t.originalTxRef || t.id || '-',
+    t.refNum || '-',
+    t.fitId || t.id || '-',
     (t.type === 'credit' ? '+' : '-') + ' ' + formatCurrency(t.absAmount),
     t.balanceBefore != null ? formatCurrency(t.balanceBefore) : '-',
     t.balanceAfter != null ? formatCurrency(t.balanceAfter) : '-',
@@ -2792,12 +2744,13 @@ function doExportPDF() {
       0: { cellWidth: 22 },                                 // Data
       1: { cellWidth: 18 },                                 // Tipo
       2: { cellWidth: 'auto' },                             // Descrição
-      3: { cellWidth: 30 },                                 // Contraparte
-      4: { cellWidth: 26 },                                 // Destinatário Estorno
-      5: { cellWidth: 22, font: 'courier', fontSize: 5.5 }, // TxId / EndToEnd
-      6: { cellWidth: 22, halign: 'right', fontStyle: 'bold' }, // Valor
-      7: { cellWidth: 18, halign: 'right' },                // Saldo Antes
-      8: { cellWidth: 20, halign: 'right', fontStyle: 'bold' }, // Saldo Após
+      3: { cellWidth: 28 },                                 // Contraparte
+      4: { cellWidth: 22 },                                 // Destinatário Estorno
+      5: { cellWidth: 28, font: 'courier', fontSize: 5.5 }, // EndToEndId
+      6: { cellWidth: 16, font: 'courier', fontSize: 5.5 }, // TxId
+      7: { cellWidth: 20, halign: 'right', fontStyle: 'bold' }, // Valor
+      8: { cellWidth: 18, halign: 'right' },                // Saldo Antes
+      9: { cellWidth: 20, halign: 'right', fontStyle: 'bold' }, // Saldo Após
     },
     didParseCell: (data) => {
       if (data.section !== 'body') return;
@@ -2809,12 +2762,12 @@ function doExportPDF() {
         // Boleto: fundo azul suave
         data.cell.styles.fillColor = [219, 234, 254]; // blue-100
       }
-      // Coluna VALOR (6): verde ou vermelho
-      if (data.column.index === 6) {
+      // Coluna VALOR (7): verde ou vermelho
+      if (data.column.index === 7) {
         data.cell.styles.textColor = t.amount >= 0 ? COL.green : COL.red;
       }
-      // Saldo após (8) negativo: vermelho
-      if (data.column.index === 8 && t.balanceAfter != null && t.balanceAfter < 0) {
+      // Saldo após (9) negativo: vermelho
+      if (data.column.index === 9 && t.balanceAfter != null && t.balanceAfter < 0) {
         data.cell.styles.textColor = COL.red;
       }
       // Destinatário Estorno (4): amber escuro

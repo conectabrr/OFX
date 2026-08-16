@@ -423,23 +423,6 @@ app.get('/', (c) => {
                 ></span>
               </h2>
               <div class="flex items-center gap-2 flex-wrap">
-                {/* Botão exclusivo de estorno - toggle independente do filtro de tipo */}
-                <button
-                  id="counterparty-reversal-toggle"
-                  type="button"
-                  class="hidden bg-amber-50 dark:bg-amber-900/40 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60 px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5"
-                  title="Mostrar apenas movimentos com estornos"
-                  aria-pressed="false"
-                >
-                  <i class="fas fa-undo"></i>
-                  <span>Somente estornos</span>
-                  <span
-                    id="counterparty-reversal-badge"
-                    class="bg-amber-200 dark:bg-amber-800 text-amber-900 dark:text-amber-100 rounded-full px-1.5 text-[10px] font-bold"
-                  >
-                    0
-                  </span>
-                </button>
                 <button
                   id="counterparty-toggle"
                   class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800"
@@ -450,17 +433,17 @@ app.get('/', (c) => {
               </div>
             </div>
             <p class="text-xs text-gray-500 dark:text-slate-400 mb-2">
-              Clique em um movimento para filtrar. Cards em <span class="text-green-600 dark:text-green-400 font-semibold">verde</span> só têm créditos, em <span class="text-red-600 dark:text-red-400 font-semibold">vermelho</span> só débitos. Use <strong class="text-amber-700 dark:text-amber-300">Somente estornos</strong> para isolar devoluções/reembolsos.
+              Clique em <span class="text-green-400 font-semibold">Créditos</span> ou <span class="text-red-400 font-semibold">Débitos</span> para filtrar a tabela por tipo. Para ver as contrapartes individuais, use o filtro <strong>Conta Destino/Origem</strong>.
             </p>
-            {/* Totais agregados dos cards visíveis — respondem ao filtro
-                de tipo (todos / crédito / débito / somente estornos). */}
+            {/* Totais gerais (sempre visíveis, independentes do filtro) */}
             <div
               id="counterparty-totals"
               class="text-sm mb-3 min-h-[1.25rem] flex items-center flex-wrap"
             ></div>
+            {/* Painel simplificado: 2 cards (Créditos, Débitos) */}
             <div
               id="counterparty-panel"
-              class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-64 overflow-y-auto"
+              class="grid grid-cols-1 sm:grid-cols-2 gap-3"
             ></div>
           </div>
 
@@ -511,7 +494,7 @@ app.get('/', (c) => {
                     <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Descrição</th>
                     <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase">Conta Destino/Origem</th>
                     <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="Nome do destinatário original da transação estornada/devolvida">Destinatário Estorno</th>
-                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="TxId (FITID do OFX) ou EndToEndId do PIX quando disponível">TxId / EndToEnd</th>
+                    <th class="text-left px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase" title="EndToEndId (REFNUM do OFX, é o que aparece no comprovante BACEN) e TxId (FITID do OFX)">TxId / EndToEnd</th>
                     <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Valor</th>
                     <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Antes</th>
                     <th class="text-right px-3 py-3 text-xs font-semibold text-gray-600 dark:text-slate-300 uppercase whitespace-nowrap">Saldo Após</th>
