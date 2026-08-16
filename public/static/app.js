@@ -21,6 +21,19 @@ const state = {
   ofxFiles: [],
   // Guarda para evitar rebind de listeners em setupFilters() (chamado a cada merge)
   _filterListenersBound: false,
+  // ==========================================================
+  // MULTISELECT DE FILTROS (busca por descrição + contraparte)
+  // ==========================================================
+  // Cada filtro guarda um array de pills: { value: string, exclude: boolean }
+  // - value:   termo/token exato como digitado ou selecionado do dropdown
+  // - exclude: true = pill vermelha (NOT), false = pill verde (AND)
+  // O usuário adiciona por Enter, vírgula ou clique no dropdown, e alterna
+  // include/exclude clicando na própria pill.
+  // ==========================================================
+  filterPills: {
+    search: [],       // ex.: [ {value:'pix', exclude:false}, {value:'boleto', exclude:true} ]
+    counterparty: [], // ex.: [ {value:'iFood', exclude:false} ]
+  },
 };
 
 // ============================================================
@@ -1000,6 +1013,12 @@ resetBtn.addEventListener('click', () => {
   filterEnd.value = '';
   filterSearch.value = '';
   filterCounterparty.value = '';
+  // Também zera pills dos multiselects (novo arquivo → contexto novo)
+  state.filterPills.search = [];
+  state.filterPills.counterparty = [];
+  // Re-render se já foram inicializados (guard interno)
+  if (multiselectRuntime.search.config)       renderFilterPills('search');
+  if (multiselectRuntime.counterparty.config) renderFilterPills('counterparty');
   filterMin.value = '';
   filterMax.value = '';
   filterType.value = 'all';
@@ -1579,12 +1598,11 @@ function setupFilters(opts = {}) {
  * que tem o guard state._filterListenersBound.
  */
 function bindFilterListeners() {
+  // Inputs simples (não multiselect): apenas dispara applyFilters
   const filterEls = [
     filterType,
     filterStart,
     filterEnd,
-    filterSearch,
-    filterCounterparty,
     filterMin,
     filterMax,
     filterSort,
@@ -1598,20 +1616,27 @@ function bindFilterListeners() {
     el.addEventListener('change', handler);
   });
 
-  // Botão borracha do filtro Conta Destino/Origem
-  filterCounterparty.addEventListener('input', updateCounterpartyClearBtn);
-  const clearCpBtn = document.getElementById('filter-counterparty-clear');
-  if (clearCpBtn) {
-    clearCpBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      filterCounterparty.value = '';
-      updateCounterpartyClearBtn();
-      state.currentPage = 1;
-      applyFilters();
-      filterCounterparty.focus();
-    });
-  }
+  // ==== FILTROS MULTISELECT (com pills + autocomplete inline) ====
+  //   - Busca por Descrição: sugere palavras encontradas em descrições
+  //   - Conta Destino/Origem: sugere nomes das contrapartes conhecidas
+  initMultiselectFilter('search', {
+    inputId: 'filter-search',
+    pillsId: 'filter-search-pills',
+    suggestionsId: 'filter-search-suggestions',
+    wrapperId: 'filter-search-wrapper',
+    getSuggestions: getSearchSuggestions,
+    // Aceita qualquer texto livre (não precisa vir da lista)
+    freeText: true,
+  });
+
+  initMultiselectFilter('counterparty', {
+    inputId: 'filter-counterparty',
+    pillsId: 'filter-counterparty-pills',
+    suggestionsId: 'filter-counterparty-suggestions',
+    wrapperId: 'filter-counterparty-wrapper',
+    getSuggestions: getCounterpartySuggestions,
+    freeText: true, // também permite texto livre
+  });
 
   // Filtro estorno
   const filterReversal = document.getElementById('filter-reversal');
@@ -1640,24 +1665,6 @@ function bindFilterListeners() {
     });
   }
 
-  // Regra de coerência TIPO x contraparte
-  filterType.addEventListener('change', () => {
-    const cpValue = filterCounterparty.value.trim().toLowerCase();
-    if (!cpValue) return;
-    const typeF = filterType.value;
-    const entry = state.counterpartyList.find(
-      ([n]) => n.toLowerCase() === cpValue
-    );
-    if (!entry) return;
-    const [, data] = entry;
-    if (typeF === 'credit' && data.creditCount === 0) {
-      filterCounterparty.value = '';
-    } else if (typeF === 'debit' && data.debitCount === 0) {
-      filterCounterparty.value = '';
-    }
-    updateCounterpartyClearBtn();
-  });
-
   // Mudança de tamanho de página
   pageSizeSelect.addEventListener('change', () => {
     state.pageSize = parseInt(pageSizeSelect.value, 10) || 100;
@@ -1678,6 +1685,11 @@ function bindFilterListeners() {
     filterEnd.value = '';
     filterSearch.value = '';
     filterCounterparty.value = '';
+    // Limpa todas as pills dos multiselects
+    state.filterPills.search = [];
+    state.filterPills.counterparty = [];
+    renderFilterPills('search');
+    renderFilterPills('counterparty');
     filterMin.value = '';
     filterMax.value = '';
     filterSort.value = 'date-desc';
@@ -1687,7 +1699,6 @@ function bindFilterListeners() {
     if (filterBoleto) filterBoleto.value = 'all';
     const filterDevolucao = document.getElementById('filter-devolucao');
     if (filterDevolucao) filterDevolucao.value = 'all';
-    updateCounterpartyClearBtn();
     state.currentPage = 1;
     applyFilters();
   });
@@ -2051,19 +2062,360 @@ function renderCounterpartyPanel() {
   });
 }
 
+// Compat: código legado ainda chama updateCounterpartyClearBtn — vira noop.
+function updateCounterpartyClearBtn() { /* obsoleto: substituído por multiselect */ }
+
+// ============================================================
+// MULTISELECT COM PILLS + AUTOCOMPLETE
+// ============================================================
+// Guarda estado runtime de cada multiselect (referência ao target,
+// índice do item destacado no dropdown, etc).
+const multiselectRuntime = {
+  search:       { key: 'search',       highlighted: -1, config: null },
+  counterparty: { key: 'counterparty', highlighted: -1, config: null },
+};
+
 /**
- * Atualiza a visibilidade do botão eraser do filtro Conta Destino/Origem.
- * O CSS mostra o botão apenas quando o wrapper tem classe .has-value.
+ * Inicializa um filtro multiselect. Faz o bind de TODOS os handlers
+ * (input, keydown, click, blur, click nas pills, click nas sugestões).
+ * Idempotente: se já foi inicializado, apenas re-renderiza as pills.
  */
-function updateCounterpartyClearBtn() {
-  const wrapper = document.getElementById('filter-counterparty-wrapper');
-  const input = document.getElementById('filter-counterparty');
-  if (!wrapper || !input) return;
-  if (input.value.trim().length > 0) {
-    wrapper.classList.add('has-value');
+function initMultiselectFilter(key, config) {
+  const rt = multiselectRuntime[key];
+  if (rt.config) { renderFilterPills(key); return; } // já bindado
+  rt.config = config;
+
+  const input       = document.getElementById(config.inputId);
+  const wrapper     = document.getElementById(config.wrapperId);
+  const suggestions = document.getElementById(config.suggestionsId);
+  if (!input || !wrapper || !suggestions) return;
+
+  // Foco no wrapper (click em qualquer parte que não seja pill) → foca no input
+  wrapper.addEventListener('click', (e) => {
+    if (e.target === wrapper || e.target.classList.contains('multiselect-pills')) {
+      input.focus();
+    }
+  });
+
+  // ---- INPUT: filtra sugestões e faz "live search" ----
+  input.addEventListener('input', () => {
+    rt.highlighted = -1;
+    renderMultiselectSuggestions(key);
+    // Live search: applyFilters já usa input.value como pill temporário
+    state.currentPage = 1;
+    applyFilters();
+  });
+
+  // ---- FOCUS / CLICK: abre dropdown de sugestões ----
+  const openSuggestions = () => {
+    rt.highlighted = -1;
+    renderMultiselectSuggestions(key);
+  };
+  input.addEventListener('focus', openSuggestions);
+  input.addEventListener('click', openSuggestions);
+
+  // ---- BLUR: fecha dropdown (com delay pra dar tempo do click) ----
+  input.addEventListener('blur', () => {
+    // Delay curto: se o blur foi porque o usuário clicou numa sugestão,
+    // o handler do click da sugestão precisa rodar antes de fecharmos.
+    setTimeout(() => {
+      suggestions.classList.remove('open');
+    }, 180);
+  });
+
+  // ---- KEYDOWN: Enter/Vírgula adiciona, Backspace remove, setas navegam ----
+  input.addEventListener('keydown', (e) => {
+    const pills = state.filterPills[key];
+    const items = getVisibleSuggestions(key);
+
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      // Se há item destacado no dropdown, adiciona-o. Senão, adiciona o texto do input.
+      if (rt.highlighted >= 0 && rt.highlighted < items.length) {
+        addPill(key, items[rt.highlighted].value, false);
+      } else {
+        const raw = input.value.trim();
+        if (raw && config.freeText) {
+          // Suporta "-palavra" para criar pill de exclusão logo na digitação
+          const isExclude = raw.startsWith('-') && raw.length > 1;
+          addPill(key, isExclude ? raw.substring(1) : raw, isExclude);
+        }
+      }
+      return;
+    }
+
+    if (e.key === 'Backspace' && input.value === '' && pills.length > 0) {
+      // Backspace com input vazio → remove última pill
+      e.preventDefault();
+      pills.pop();
+      renderFilterPills(key);
+      state.currentPage = 1;
+      applyFilters();
+      return;
+    }
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (items.length === 0) return;
+      rt.highlighted = Math.min(rt.highlighted + 1, items.length - 1);
+      renderMultiselectSuggestions(key);
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (items.length === 0) return;
+      rt.highlighted = Math.max(rt.highlighted - 1, 0);
+      renderMultiselectSuggestions(key);
+      return;
+    }
+    if (e.key === 'Escape') {
+      suggestions.classList.remove('open');
+      rt.highlighted = -1;
+    }
+  });
+
+  // Renderização inicial das pills (pode ter estado persistido)
+  renderFilterPills(key);
+}
+
+/** Retorna as sugestões atuais visíveis (filtradas + limitadas) */
+function getVisibleSuggestions(key) {
+  const rt = multiselectRuntime[key];
+  if (!rt.config) return [];
+  const input = document.getElementById(rt.config.inputId);
+  const query = (input?.value || '').trim();
+  return rt.config.getSuggestions(query, state.filterPills[key]);
+}
+
+/**
+ * Adiciona uma pill ao filtro. Se já existe uma pill com o mesmo valor
+ * (case-insensitive), apenas alterna include/exclude.
+ */
+function addPill(key, value, exclude = false) {
+  const clean = String(value).trim();
+  if (!clean) return;
+  const pills = state.filterPills[key];
+  const existing = pills.find(
+    (p) => normalizeText(p.value) === normalizeText(clean)
+  );
+  if (existing) {
+    // Já existe: se o modo mudou, alterna; senão nada muda
+    existing.exclude = exclude;
   } else {
-    wrapper.classList.remove('has-value');
+    pills.push({ value: clean, exclude });
   }
+  // Limpa input e re-renderiza tudo
+  const input = document.getElementById(multiselectRuntime[key].config.inputId);
+  if (input) input.value = '';
+  renderFilterPills(key);
+  renderMultiselectSuggestions(key);
+  state.currentPage = 1;
+  applyFilters();
+  if (input) input.focus();
+}
+
+/** Remove pill pelo índice */
+function removePill(key, index) {
+  state.filterPills[key].splice(index, 1);
+  renderFilterPills(key);
+  state.currentPage = 1;
+  applyFilters();
+}
+
+/** Alterna include/exclude de uma pill */
+function togglePill(key, index) {
+  const pill = state.filterPills[key][index];
+  if (!pill) return;
+  pill.exclude = !pill.exclude;
+  renderFilterPills(key);
+  state.currentPage = 1;
+  applyFilters();
+}
+
+/**
+ * Renderiza a lista de pills num container. Cada pill:
+ *  - clicável (toggle include/exclude)
+ *  - com botão X para remover
+ *  - cor verde (include) ou vermelha com riscado (exclude)
+ */
+function renderFilterPills(key) {
+  const rt = multiselectRuntime[key];
+  if (!rt.config) return;
+  const container = document.getElementById(rt.config.pillsId);
+  if (!container) return;
+  const pills = state.filterPills[key];
+
+  container.innerHTML = pills.map((p, idx) => {
+    const cls   = p.exclude ? 'exclude' : 'include';
+    const icon  = p.exclude ? '−' : '+';
+    const title = p.exclude
+      ? `EXCLUINDO "${escapeHtml(p.value)}" — clique para incluir, X para remover`
+      : `INCLUINDO "${escapeHtml(p.value)}" — clique para excluir, X para remover`;
+    return `<span class="multiselect-pill ${cls}" data-idx="${idx}" title="${title}">
+      <span class="multiselect-pill-icon">${icon}</span>
+      <span class="multiselect-pill-label">${escapeHtml(p.value)}</span>
+      <span class="multiselect-pill-remove" data-idx="${idx}" title="Remover">×</span>
+    </span>`;
+  }).join('');
+
+  // Bind clicks nas pills
+  container.querySelectorAll('.multiselect-pill').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      const idx = parseInt(el.getAttribute('data-idx'), 10);
+      // Clique no X → remove; senão → toggle
+      if (e.target.classList.contains('multiselect-pill-remove')) {
+        e.stopPropagation();
+        removePill(key, idx);
+      } else {
+        togglePill(key, idx);
+      }
+    });
+  });
+}
+
+/**
+ * Renderiza o dropdown de sugestões. Mostra:
+ *   - Header com atalhos (adicionar todos como include/exclude — quando faz sentido)
+ *   - Cada sugestão com label e contagem
+ *   - Sugestões já selecionadas ficam "opaca" com ✓
+ *   - Empty state quando não há resultados
+ */
+function renderMultiselectSuggestions(key) {
+  const rt = multiselectRuntime[key];
+  if (!rt.config) return;
+  const box = document.getElementById(rt.config.suggestionsId);
+  const input = document.getElementById(rt.config.inputId);
+  if (!box || !input) return;
+
+  const items = getVisibleSuggestions(key);
+  const pills = state.filterPills[key];
+  const selectedSet = new Set(pills.map((p) => normalizeText(p.value)));
+
+  if (items.length === 0) {
+    // Ainda mostra hint mínimo se input vazio → simplesmente esconde
+    if (!input.value.trim() && pills.length === 0) {
+      box.classList.remove('open');
+      return;
+    }
+    box.innerHTML = `<div class="multiselect-suggestion-empty">
+      Nenhuma sugestão encontrada. Pressione Enter para adicionar "${escapeHtml(input.value.trim() || '')}" como termo livre.
+    </div>`;
+    box.classList.add('open');
+    return;
+  }
+
+  // Header com atalhos rápidos
+  const hint = `<div class="multiselect-suggestions-hint">
+    <span>${items.length} sugestão(ões)${input.value.trim() ? ' filtradas' : ''}</span>
+    <span>
+      <span class="multiselect-hint-btn" data-action="hide">esc para fechar</span>
+    </span>
+  </div>`;
+
+  const rows = items.map((it, i) => {
+    const already = selectedSet.has(normalizeText(it.value));
+    const cls = [
+      'multiselect-suggestion',
+      already ? 'already-selected' : '',
+      i === rt.highlighted ? 'highlighted' : '',
+    ].filter(Boolean).join(' ');
+    return `<div class="${cls}" data-idx="${i}" data-value="${escapeHtml(it.value)}">
+      <span class="multiselect-suggestion-label">${escapeHtml(it.label || it.value)}</span>
+      ${it.count != null
+        ? `<span class="multiselect-suggestion-count">${it.count}</span>`
+        : ''}
+    </div>`;
+  }).join('');
+
+  box.innerHTML = hint + rows;
+  box.classList.add('open');
+
+  // Bind clicks (mousedown pra rodar ANTES do blur do input)
+  box.querySelectorAll('.multiselect-suggestion').forEach((el) => {
+    el.addEventListener('mousedown', (e) => {
+      e.preventDefault(); // impede blur do input
+      if (el.classList.contains('already-selected')) {
+        // Já selecionado → toggle include/exclude da pill existente
+        const val = el.getAttribute('data-value');
+        const pillIdx = state.filterPills[key].findIndex(
+          (p) => normalizeText(p.value) === normalizeText(val)
+        );
+        if (pillIdx >= 0) togglePill(key, pillIdx);
+        return;
+      }
+      const val = el.getAttribute('data-value');
+      // Shift+click = adicionar como EXCLUDE, click normal = INCLUDE
+      addPill(key, val, e.shiftKey);
+    });
+  });
+}
+
+/**
+ * Retorna sugestões para o filtro "Buscar Descrição":
+ *   - Extrai palavras únicas das descrições das transações
+ *   - Filtra pelo query (contém, case-insensitive, sem acento)
+ *   - Ordena por frequência decrescente
+ *   - Limita a 40 resultados
+ */
+function getSearchSuggestions(query, pills) {
+  const q = normalizeText(query);
+  const wordCount = new Map();
+
+  // Palavras que não fazem sentido sugerir isoladamente
+  const STOPWORDS = new Set([
+    'de','da','do','das','dos','a','o','e','em','no','na','para','com','por',
+    'um','uma','ao','aos','as','os','se','ou','sem','sob','à','às','ó','à',
+  ]);
+
+  (state.transactions || []).forEach((t) => {
+    const text = `${t.description || ''} ${t.memo || ''} ${t.name || ''} ${t.trnType || ''}`;
+    // Split em tokens alfanuméricos (mantém #, hifens simples)
+    const tokens = normalizeText(text).split(/[\s,.;:!?()\[\]{}"']+/);
+    tokens.forEach((tok) => {
+      if (!tok || tok.length < 3) return;
+      if (STOPWORDS.has(tok)) return;
+      wordCount.set(tok, (wordCount.get(tok) || 0) + 1);
+    });
+  });
+
+  // Aplica filtro do query
+  let entries = [...wordCount.entries()];
+  if (q) entries = entries.filter(([w]) => w.includes(q));
+
+  entries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return entries.slice(0, 40).map(([word, count]) => ({
+    value: word,
+    label: word,
+    count,
+  }));
+}
+
+/**
+ * Retorna sugestões para o filtro "Conta Destino/Origem":
+ *   - Usa state.counterpartyList (nomes agregados)
+ *   - Filtra pelo query
+ *   - Respeita o filtro de tipo atual (se está em crédito, só nomes que
+ *     têm crédito; se débito, só quem tem débito)
+ *   - Limita a 60 resultados
+ */
+function getCounterpartySuggestions(query, pills) {
+  const q = normalizeText(query);
+  const typeF = filterType.value;
+  const list = state.counterpartyList || [];
+
+  const filtered = list.filter(([name, data]) => {
+    if (typeF === 'credit' && data.creditCount === 0) return false;
+    if (typeF === 'debit'  && data.debitCount === 0)  return false;
+    if (q && !normalizeText(name).includes(q)) return false;
+    return true;
+  });
+
+  return filtered.slice(0, 60).map(([name, data]) => {
+    const count = typeF === 'credit' ? data.creditCount
+                : typeF === 'debit'  ? data.debitCount
+                : data.count;
+    return { value: name, label: name, count };
+  });
 }
 
 /**
@@ -2170,20 +2522,23 @@ function applyFilters() {
     result = result.filter((t) => t.date && t.date <= endDt);
   }
 
-  // Filtro por descrição - BUSCA AVANÇADA COMBINADA
-  // Suporta múltiplas palavras (todas devem existir, em qualquer ordem)
-  // Suporta "-palavra" para excluir e "frase entre aspas" para busca exata
-  // Ex.: pix joão            → contém "pix" E "joão"
-  // Ex.: pix -reembolso      → contém "pix" mas NÃO "reembolso"
-  // Ex.: "netflix assinatura" → contém a frase exata
-  const searchRaw = filterSearch.value.trim();
-  if (searchRaw) {
-    const tokens = parseSearchQuery(searchRaw);
+  // ============================================================
+  // Filtro por descrição — MULTISELECT com pills.
+  // Cada pill { value, exclude } gera um token AND:
+  //   - exclude=false → transação DEVE conter o termo
+  //   - exclude=true  → transação NÃO pode conter o termo
+  // Também aceita o texto ainda não confirmado (input.value) como token
+  // temporário para busca "ao vivo" enquanto o usuário digita.
+  // ============================================================
+  const searchPills = state.filterPills.search.slice();
+  const searchLive = (filterSearch.value || '').trim();
+  if (searchLive) searchPills.push({ value: searchLive, exclude: false });
+  if (searchPills.length > 0) {
     result = result.filter((t) => {
       const haystack = normalizeText(
         `${t.description || ''} ${t.memo || ''} ${t.name || ''} ${t.trnType || ''}`
       );
-      return tokens.every((tok) => {
+      return searchPills.every((tok) => {
         const needle = normalizeText(tok.value);
         const found = haystack.includes(needle);
         return tok.exclude ? !found : found;
@@ -2191,13 +2546,19 @@ function applyFilters() {
     });
   }
 
-  // Filtro por conta destino/origem (contraparte) - também com busca combinada.
-  // Inclui movementKey no haystack para que a seleção de um card PIX
-  // consolidado (que usa apenas o nome normalizado) case corretamente
-  // com todas as transações PIX daquele nome.
-  const cpRaw = filterCounterparty.value.trim();
-  if (cpRaw) {
-    const tokens = parseSearchQuery(cpRaw);
+  // ============================================================
+  // Filtro por conta destino/origem — MULTISELECT com pills.
+  // Diferença semântica em relação ao filtro de busca:
+  //   - Se a pill veio de uma sugestão (nome de contraparte), fazemos
+  //     match "canônico" pelo nome (mais preciso — evita substrings
+  //     genéricas tipo "pix" pegando qualquer coisa).
+  //   - Para pills de texto livre, cai no match por substring como antes.
+  // Sinalizamos "veio da lista" no próprio pill (source='list').
+  // ============================================================
+  const cpPills = state.filterPills.counterparty.slice();
+  const cpLive = (filterCounterparty.value || '').trim();
+  if (cpLive) cpPills.push({ value: cpLive, exclude: false, source: 'live' });
+  if (cpPills.length > 0) {
     result = result.filter((t) => {
       const haystack = normalizeText(
         `${t.counterparty || ''} ${t.counterpartyName || ''} ${
@@ -2206,11 +2567,21 @@ function applyFilters() {
           t.movementKey || ''
         }`
       );
-      return tokens.every((tok) => {
-        const needle = normalizeText(tok.value);
-        const found = haystack.includes(needle);
-        return tok.exclude ? !found : found;
-      });
+      // Regra AND com include + OR entre pills "include-de-lista":
+      //   Se o usuário selecionou várias origens da lista, ele quer VER
+      //   as transações de QUALQUER uma delas (não a interseção — isso
+      //   sempre daria vazio, pois uma transação só tem 1 contraparte).
+      //   Já as pills EXCLUDE são sempre AND (todas devem NÃO bater).
+      const includePills = cpPills.filter((p) => !p.exclude);
+      const excludePills = cpPills.filter((p) => p.exclude);
+
+      const matchesInclude =
+        includePills.length === 0 ||
+        includePills.some((p) => haystack.includes(normalizeText(p.value)));
+      const matchesExclude = excludePills.every(
+        (p) => !haystack.includes(normalizeText(p.value))
+      );
+      return matchesInclude && matchesExclude;
     });
   }
 
@@ -3120,8 +3491,15 @@ function collectAppliedFilters() {
   }
   if (filterStart.value) list.push(`De: ${new Date(filterStart.value).toLocaleString('pt-BR')}`);
   if (filterEnd.value) list.push(`Até: ${new Date(filterEnd.value).toLocaleString('pt-BR')}`);
-  if (filterSearch.value) list.push(`Busca: "${filterSearch.value}"`);
-  if (filterCounterparty.value) list.push(`Conta: ${filterCounterparty.value}`);
+  // Multiselect: monta lista legível de pills (+incluir / −excluir)
+  const fmtPills = (pills) => pills.map((p) =>
+    `${p.exclude ? '−' : '+'}${p.value}`).join(' / ');
+  const searchPills = state.filterPills.search || [];
+  const cpPills = state.filterPills.counterparty || [];
+  if (searchPills.length > 0)   list.push(`Busca: ${fmtPills(searchPills)}`);
+  if (filterSearch.value.trim()) list.push(`Busca (digitando): "${filterSearch.value.trim()}"`);
+  if (cpPills.length > 0)        list.push(`Conta: ${fmtPills(cpPills)}`);
+  if (filterCounterparty.value.trim()) list.push(`Conta (digitando): "${filterCounterparty.value.trim()}"`);
   if (filterMin.value) list.push(`Mín: ${filterMin.value}`);
   if (filterMax.value) list.push(`Máx: ${filterMax.value}`);
   const reversalEl = document.getElementById('filter-reversal');

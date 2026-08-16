@@ -375,47 +375,50 @@ app.get('/', (c) => {
                   Buscar Descrição
                   <span
                     class="ml-1 text-blue-500 cursor-help"
-                    title='Busca combinada: separe palavras por espaço (todas devem existir). Use "frase entre aspas" para busca exata. Use -palavra para excluir.'
+                    title="Digite e pressione Enter (ou selecione da lista) para adicionar. Cada pill é um termo — clique nela para alternar entre INCLUIR (verde) e EXCLUIR (vermelho). X remove."
                   >
                     <i class="fas fa-question-circle"></i>
                   </span>
                 </label>
-                <input
-                  type="text"
-                  id="filter-search"
-                  placeholder='pix maria  |  "netflix"  |  pix -reembolso'
-                  class="w-full border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-900 dark:text-slate-100 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
+                {/* Multi-select com pills + autocomplete inline. */}
+                <div id="filter-search-wrapper" class="multiselect-wrapper" data-target="search">
+                  <div class="multiselect-pills" id="filter-search-pills"></div>
+                  <input
+                    type="text"
+                    id="filter-search"
+                    placeholder="Digite palavra e Enter..."
+                    autocomplete="off"
+                    class="multiselect-input"
+                  />
+                  <div class="multiselect-suggestions" id="filter-search-suggestions"></div>
+                </div>
                 <p class="text-[10px] text-gray-500 dark:text-slate-400 mt-1 hidden sm:block">
-                  Múltiplas palavras: <code class="bg-gray-100 dark:bg-slate-700 px-1">todas</code> · <code class="bg-gray-100 dark:bg-slate-700 px-1">"aspas"</code> = exata · <code class="bg-gray-100 dark:bg-slate-700 px-1">-palavra</code> = excluir
+                  <span class="text-emerald-500 font-semibold">Verde = incluir</span> · <span class="text-rose-500 font-semibold">Vermelho = excluir</span> · Clique na pill para alternar
                 </p>
               </div>
               <div>
                 <label class="block text-xs font-semibold text-gray-600 dark:text-slate-300 mb-1">
                   Conta Destino/Origem
+                  <span
+                    class="ml-1 text-blue-500 cursor-help"
+                    title="Multi-seleção: escolha várias origens/destinos ao mesmo tempo. Clique numa pill para alternar entre INCLUIR (verde) e EXCLUIR (vermelho). O dropdown filtra as opções conforme você digita."
+                  >
+                    <i class="fas fa-question-circle"></i>
+                  </span>
                 </label>
-                <div id="filter-counterparty-wrapper" class="input-clearable-wrapper">
+                <div id="filter-counterparty-wrapper" class="multiselect-wrapper" data-target="counterparty">
+                  <div class="multiselect-pills" id="filter-counterparty-pills"></div>
                   <input
                     type="text"
                     id="filter-counterparty"
-                    list="counterparty-list"
-                    placeholder="Digite ou selecione ao lado..."
+                    placeholder="Digite ou clique para ver todas..."
                     autocomplete="off"
-                    class="w-full border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-900 dark:text-slate-100 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    class="multiselect-input"
                   />
-                  <button
-                    type="button"
-                    id="filter-counterparty-clear"
-                    class="input-clear-btn"
-                    title="Limpar seleção"
-                    aria-label="Limpar conta destino/origem"
-                  >
-                    <i class="fas fa-eraser"></i>
-                  </button>
+                  <div class="multiselect-suggestions" id="filter-counterparty-suggestions"></div>
                 </div>
-                <datalist id="counterparty-list"></datalist>
                 <p class="text-[10px] text-gray-500 dark:text-slate-400 mt-1 hidden sm:block">
-                  Sincronizado com o tipo de transação
+                  Selecione várias · Clique na pill para incluir/excluir
                 </p>
               </div>
               <div>

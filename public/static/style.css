@@ -774,6 +774,242 @@ html:not(.dark) {
 }
 
 /* ============================================================
+   MULTISELECT COM PILLS + AUTOCOMPLETE (filtros de busca e contraparte)
+   ============================================================
+   Requisitos do usuário:
+   - Escolher múltiplas origens/palavras
+   - Ver o que já selecionei enquanto continuo digitando
+   - Autocomplete conforme digito
+   - Pill clicável alterna entre INCLUIR (verde) e EXCLUIR (vermelho)
+   - X remove pill individualmente
+*/
+.multiselect-wrapper {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 38px;
+  padding: 4px 6px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  border-radius: 8px;
+  cursor: text;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.dark .multiselect-wrapper {
+  border-color: #475569;
+  background: #334155;
+}
+.multiselect-wrapper:focus-within {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+.multiselect-pills {
+  display: contents; /* pills participam do flex do wrapper */
+}
+
+.multiselect-input {
+  flex: 1 1 120px;
+  min-width: 80px;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 13px;
+  padding: 4px 4px;
+  color: #0f172a;
+}
+.dark .multiselect-input {
+  color: #f1f5f9;
+}
+.multiselect-input::placeholder {
+  color: #94a3b8;
+}
+
+.multiselect-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+  user-select: none;
+  max-width: 260px;
+  transition: filter 0.12s, transform 0.05s;
+}
+.multiselect-pill:hover { filter: brightness(1.08); }
+.multiselect-pill:active { transform: scale(0.97); }
+
+.multiselect-pill-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+.multiselect-pill-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.12);
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.multiselect-pill-remove:hover {
+  background: rgba(0, 0, 0, 0.28);
+}
+
+/* Pill INCLUIR (verde) */
+.multiselect-pill.include {
+  background: #d1fae5;
+  color: #065f46;
+  border: 1px solid #6ee7b7;
+}
+.dark .multiselect-pill.include {
+  background: rgba(16, 185, 129, 0.22);
+  color: #a7f3d0;
+  border-color: rgba(16, 185, 129, 0.5);
+}
+
+/* Pill EXCLUIR (vermelho) */
+.multiselect-pill.exclude {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+  text-decoration: line-through;
+}
+.dark .multiselect-pill.exclude {
+  background: rgba(239, 68, 68, 0.22);
+  color: #fecaca;
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+/* Ícone de modo (⊕ / ⊖) antes do texto */
+.multiselect-pill-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  font-weight: 700;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+/* ========== DROPDOWN DE SUGESTÕES ========== */
+.multiselect-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
+  z-index: 60;
+  display: none;
+}
+.dark .multiselect-suggestions {
+  background: #1e293b;
+  border-color: #475569;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+.multiselect-suggestions.open {
+  display: block;
+}
+
+.multiselect-suggestion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+  color: #1f2937;
+  border-bottom: 1px solid #f1f5f9;
+}
+.dark .multiselect-suggestion {
+  color: #e2e8f0;
+  border-bottom-color: #334155;
+}
+.multiselect-suggestion:last-child { border-bottom: none; }
+.multiselect-suggestion:hover,
+.multiselect-suggestion.highlighted {
+  background: #eff6ff;
+}
+.dark .multiselect-suggestion:hover,
+.dark .multiselect-suggestion.highlighted {
+  background: rgba(59, 130, 246, 0.18);
+}
+.multiselect-suggestion-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.multiselect-suggestion-count {
+  font-size: 10.5px;
+  color: #64748b;
+  background: #f1f5f9;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.dark .multiselect-suggestion-count {
+  color: #94a3b8;
+  background: #334155;
+}
+.multiselect-suggestion.already-selected {
+  opacity: 0.5;
+  cursor: default;
+}
+.multiselect-suggestion.already-selected .multiselect-suggestion-label::after {
+  content: ' ✓';
+  color: #10b981;
+  font-weight: bold;
+}
+.multiselect-suggestion-empty {
+  padding: 12px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* Botões de ação rápida no header do dropdown */
+.multiselect-suggestions-hint {
+  padding: 6px 10px;
+  font-size: 10.5px;
+  color: #64748b;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dark .multiselect-suggestions-hint {
+  background: #0f172a;
+  color: #94a3b8;
+  border-bottom-color: #334155;
+}
+.multiselect-hint-btn {
+  color: #3b82f6;
+  cursor: pointer;
+  font-weight: 600;
+}
+.multiselect-hint-btn:hover { text-decoration: underline; }
+
+/* ============================================================
    TABELA DE TRANSAÇÕES — GRID COMPLETO + STICKY HEADER
    ============================================================
    Requisitos do usuário:
