@@ -791,13 +791,17 @@ function extractCounterparty(block, memo, name) {
   //      "PAGAMENTO A/PARA NOME"                      (boletos com favorecido)
   //    Aceita nomes em maiúsculas OU capitalizados (JEAN CARLO / Jean Carlo).
   if (!result.name) {
+    // Character class ampla: aceita letras (com acentos amplos), dígitos, espaços,
+    // "&" (razões sociais tipo "LS & LS INTERMEDIACOES LTDA"), "/", ".", "'", "-".
+    // Lookahead de término: hífen com OU sem espaços em volta, palavras-âncora, ou fim.
+    const NAME_CHARS = "A-Za-zÀ-ÖØ-öø-ÿ0-9 &.'/-";
     const patterns = [
       // "Enviado para NOME" / "Recebido de NOME" — sem PIX antes (formato Itaú/Bradesco)
-      /\b(?:ENVIAD[OA]|RECEBID[OA])\s+(?:PARA|DE|A)\s+([A-ZÀ-Úa-zà-ú][A-ZÀ-Úa-zà-ú\s.'-]{2,80}?)(?=\s+-\s|\s+(?:AG|CC|BCO|BANCO|CPF|CNPJ|TRANSA[CÇ][AÃ]O|#)|$)/i,
+      new RegExp(`\\b(?:ENVIAD[OA]|RECEBID[OA])\\s+(?:PARA|DE|A)\\s+([A-Za-zÀ-ÖØ-öø-ÿ0-9][${NAME_CHARS}]{2,80}?)(?=\\s*-\\s|\\s+(?:AG|CC|BCO|BANCO|CPF|CNPJ|TRANSA[CÇ][AÃ]O|Recebimento|Pagamento|CRÉDITO|DÉBITO|Pix|#)|$)`, 'i'),
       // "PIX/TED/DOC/TRANSF ENVIADO/RECEBIDO PARA/DE/A NOME"
-      /\b(?:PIX|TED|DOC|TRANSF(?:ERENCIA)?|PAGAMENTO|PAGTO)\s+(?:ENVIAD[OA]|RECEBID[OA]|CRED|DEB)?\s*(?:PARA|A|DE)\s+([A-ZÀ-Úa-zà-ú][A-ZÀ-Úa-zà-ú\s.'-]{2,80}?)(?=\s+-\s|\s+(?:AG|CC|BCO|BANCO|CPF|CNPJ|TRANSA[CÇ][AÃ]O|#)|$)/i,
+      new RegExp(`\\b(?:PIX|TED|DOC|TRANSF(?:ERENCIA)?|PAGAMENTO|PAGTO)\\s+(?:ENVIAD[OA]|RECEBID[OA]|CRED|DEB)?\\s*(?:PARA|A|DE)\\s+([A-Za-zÀ-ÖØ-öø-ÿ0-9][${NAME_CHARS}]{2,80}?)(?=\\s*-\\s|\\s+(?:AG|CC|BCO|BANCO|CPF|CNPJ|TRANSA[CÇ][AÃ]O|Recebimento|Pagamento|CRÉDITO|DÉBITO|Pix|#)|$)`, 'i'),
       // Fallback antigo (nomes em caixa alta contíguos)
-      /(?:PIX|TED|DOC|TRANSF(?:ERENCIA)?|PAGAMENTO|PAGTO)\s+([A-ZÀ-Ú][A-ZÀ-Ú\s.]{2,60}?)(?:\s+(?:AG|CC|BCO|BANCO|CPF|CNPJ|-)|\s*$)/i,
+      /(?:PIX|TED|DOC|TRANSF(?:ERENCIA)?|PAGAMENTO|PAGTO)\s+([A-ZÀ-Ú0-9][A-ZÀ-Ú0-9\s&.'\/-]{2,60}?)(?:\s+(?:AG|CC|BCO|BANCO|CPF|CNPJ|-)|\s*$)/i,
     ];
     for (const re of patterns) {
       const nameMatch = source.match(re);
