@@ -647,16 +647,52 @@ html:not(.dark) {
    FLATPICKR — CALENDÁRIO GRANDE (substitui o picker nativo)
    ============================================================
    O CSS base do flatpickr é carregado via CDN. Aqui só aumentamos
-   os tamanhos para atender ao pedido do usuário de "calendário maior
-   e melhor" ao ABRIR (não o input em si, que já ficou bom). */
+   os tamanhos para atender ao pedido do usuário: "os 60 dias que é
+   para aparecer é o calendário completo com 60 dias". Como agora
+   usamos showMonths: 3 (~90 dias visíveis, cobre 60 dias completos
+   com folga), o calendário abre bem mais largo. */
+
+/* Um único mês (mobile) — mantém o layout original grande */
 .flatpickr-calendar {
   font-size: 15px !important;
-  width: 360px !important;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5) !important;
   border-radius: 12px !important;
   padding: 4px !important;
 }
-/* Dias do mês — cada célula maior */
+.flatpickr-calendar:not(.multiMonth) {
+  width: 360px !important;
+}
+
+/* Múltiplos meses (showMonths >= 2): cada mês ocupa 300px, calendário
+   se adapta ao total. Removemos o width fixo para que os 3 meses caibam. */
+.flatpickr-calendar.multiMonth {
+  width: auto !important;
+  max-width: 96vw !important;
+}
+.flatpickr-calendar.multiMonth .flatpickr-days {
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  display: flex !important;      /* meses lado a lado */
+  gap: 12px !important;
+}
+.flatpickr-calendar.multiMonth .dayContainer {
+  width: 300px !important;
+  min-width: 300px !important;
+  max-width: 300px !important;
+  flex: 0 0 300px !important;
+}
+/* Cada mês tem seu próprio header no modo multi-month */
+.flatpickr-calendar.multiMonth .flatpickr-months {
+  display: flex !important;
+  gap: 12px !important;
+}
+.flatpickr-calendar.multiMonth .flatpickr-month {
+  flex: 0 0 300px !important;
+}
+
+/* Dias do mês — cada célula um pouco menor no modo multi-month
+   pra caber 3 meses lado a lado sem ficar gigante */
 .flatpickr-calendar .flatpickr-day {
   height: 40px !important;
   line-height: 40px !important;
@@ -664,8 +700,16 @@ html:not(.dark) {
   font-size: 14px !important;
   border-radius: 8px !important;
 }
-.flatpickr-calendar .flatpickr-days,
-.flatpickr-calendar .dayContainer {
+.flatpickr-calendar.multiMonth .flatpickr-day {
+  height: 36px !important;
+  line-height: 36px !important;
+  max-width: 40px !important;
+  font-size: 13px !important;
+}
+
+/* Single-month: containers 100% do calendário. Multi-month usa regra acima. */
+.flatpickr-calendar:not(.multiMonth) .flatpickr-days,
+.flatpickr-calendar:not(.multiMonth) .dayContainer {
   width: 100% !important;
   min-width: 100% !important;
   max-width: 100% !important;

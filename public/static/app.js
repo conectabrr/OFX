@@ -1760,6 +1760,15 @@ function initFlatpickr() {
   if (flatpickrInstances.start) { try { flatpickrInstances.start.destroy(); } catch (_) {} }
   if (flatpickrInstances.end)   { try { flatpickrInstances.end.destroy();   } catch (_) {} }
 
+  // O usuário pediu especificamente: "o calendário completo com 60 dias"
+  // (queria ver de fato 60 dias contíguos, não os ~60 aproximados de 2 meses
+  // parciais). Passamos para 3 meses lado a lado, o que garante uma janela
+  // mínima de ~90 dias visível — mais que 60 sob qualquer alinhamento.
+  // 3 meses também casa bem com telas atuais (>= 1000px de largura).
+  // O usuário pediu "o calendário completo com 60 dias". showMonths:3
+  // garante ~90 dias visíveis, cobrindo os 60 completos com folga.
+  // Em telas < 720px cai para 1 mês (mobile).
+  const monthsToShow = window.innerWidth < 720 ? 1 : 3;
   const commonOpts = {
     enableTime: true,
     time_24hr: true,
@@ -1767,13 +1776,18 @@ function initFlatpickr() {
     minuteIncrement: 1,
     allowInput: true,   // permite digitar manualmente
     clickOpens: false,  // NÃO abre ao clicar no input (só pelo botão)
-    // showMonths:2 mostra dois meses lado a lado (≈ 60 dias visíveis),
-    // resposta ao pedido do usuário de calendário maior/mais amplo.
-    showMonths: 2,
+    showMonths: monthsToShow,
     locale: (window.flatpickr && window.flatpickr.l10ns && window.flatpickr.l10ns.pt) || 'default',
     // Dispara 'change' no input original para acionar applyFilters()
     onChange: function(_selDates, _dateStr, instance) {
       instance.input.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+    // Ao abrir: adiciona classe .multiMonth no elemento .flatpickr-calendar
+    // pra que o CSS aplique layout largo (flatpickr não faz isso sozinho).
+    onOpen: function(_selDates, _dateStr, instance) {
+      if (monthsToShow > 1 && instance.calendarContainer) {
+        instance.calendarContainer.classList.add('multiMonth');
+      }
     },
   };
   flatpickrInstances.start = window.flatpickr(filterStart, {
@@ -1911,6 +1925,8 @@ function populateCounterpartyList() {
   });
   const sorted = [...nameCount.entries()].sort((a, b) => b[1].count - a[1].count);
   state.counterpartyList = sorted;
+  // Invalida cache de sugestões de busca — transações mudaram
+  invalidateSearchSuggestionsCache();
   renderCounterpartyPanel();
 }
 
@@ -2351,70 +2367,202 @@ function renderMultiselectSuggestions(key) {
 }
 
 /**
- * Retorna sugestões para o filtro "Buscar Descrição":
- *   - Extrai palavras únicas das descrições das transações
- *   - Filtra pelo query (contém, case-insensitive, sem acento)
- *   - Ordena por frequência decrescente
- *   - Limita a 40 resultados
+ * Cache das sugestões de descrição — recalculado quando state.transactions
+ * muda (invalidado explicitamente por invalidateSearchSuggestionsCache).
+ * Compute-uma-vez porque para 500+ transações a extração é cara.
+ */
+let _searchSuggestionsCache = null;
+function invalidateSearchSuggestionsCache() { _searchSuggestionsCache = null; }
+
+/**
+ * Retorna sugestões para o filtro "Buscar Descrição".
+ *
+ * Estratégia (do MAIS ÚTIL para o MENOS útil):
+ *
+ *  1) BENEFICIÁRIOS: nomes/empresas extraídos APÓS gatilhos como
+ *     "Recebido de", "Enviado para", "Pagamento a", "de:", "para:".
+ *     São o que o usuário quer buscar 90% do tempo. Pesa 10x mais.
+ *     Ex: "LS E LS PROMOCOES E EVENTOS", "JEAN CARLO DE SOUZA", "iFood".
+ *
+ *  2) TIPOS DE OPERAÇÃO: tokens tipo "Pix", "Boleto", "TED", "DOC",
+ *     "Cielo", "InfoPago", "Débito", "Crédito", "Estorno", "Devolução".
+ *     Pesa 5x.
+ *
+ *  3) PALAVRAS ÚNICAS restantes (>=4 chars, sem stopwords).
+ *     Pesa 1x. Como o cache já tem os melhores itens, funciona como
+ *     "long tail" para buscas de nicho.
+ *
+ * Todas as sugestões usam a forma ORIGINAL (com acento e case) — assim
+ * o pill mostra "Pix" e não "pix", "iFood" e não "ifood".
  */
 function getSearchSuggestions(query, pills) {
   const q = normalizeText(query);
-  const wordCount = new Map();
 
-  // Palavras que não fazem sentido sugerir isoladamente
+  // Rebuild do cache se necessário
+  if (!_searchSuggestionsCache) {
+    _searchSuggestionsCache = buildSearchSuggestionsIndex();
+  }
+  const index = _searchSuggestionsCache;
+
+  // Filtra por query
+  let entries = index;
+  if (q) {
+    entries = entries.filter((e) => normalizeText(e.value).includes(q));
+  }
+
+  // Ordena por score (peso × frequência) desc, depois alfabético
+  entries.sort((a, b) => b.score - a.score || a.value.localeCompare(b.value, 'pt-BR'));
+
+  return entries.slice(0, 60).map((e) => ({
+    value: e.value,
+    label: e.value,
+    count: e.count,
+  }));
+}
+
+/**
+ * Constrói o índice de sugestões de busca uma única vez por dataset.
+ * Retorna array de { value: string, count: number, score: number }.
+ */
+function buildSearchSuggestionsIndex() {
+  const beneficiaryCount = new Map(); // nome → { count, canonical }
+  const typeCount        = new Map();
+  const wordCount        = new Map();
+
   const STOPWORDS = new Set([
     'de','da','do','das','dos','a','o','e','em','no','na','para','com','por',
-    'um','uma','ao','aos','as','os','se','ou','sem','sob','à','às','ó','à',
+    'um','uma','ao','aos','as','os','se','ou','sem','sob','à','às','pra','ate','até',
+    'que','qual','quais','este','esta','esse','essa','tem','são','foi','são',
+    'the','and','for','from','via',
   ]);
 
+  // Tokens de destaque comuns em extratos brasileiros — sempre sugerimos
+  // mesmo se aparecerem só 1 vez.
+  const HIGHLIGHT_TOKENS = new Set([
+    'pix','boleto','ted','doc','tef','saque','deposito','depósito','estorno',
+    'devolução','devolucao','cielo','infopago','itau','itaú','bradesco','caixa',
+    'nubank','inter','santander','bb','pagseguro','pagbank','picpay','mercadopago',
+    'crédito','credito','débito','debito','recebimento','pagamento','transferência',
+    'transferencia','tarifa','iof','imposto','recarga','fatura','cartão','cartao',
+  ]);
+
+  // Regex para extrair "beneficiário" após gatilhos comuns.
+  // Captura sequência de palavras (letras + acentos) até um separador
+  // como " - ", " Transação", ".", "  " (2+ espaços) ou fim.
+  const BENEFICIARY_TRIGGERS = [
+    /(?:recebido\s+d[eo]|creditado\s+d[eo]|origem[:\s])\s+([A-Za-zÀ-ÖØ-öø-ÿ0-9][A-Za-zÀ-ÖØ-öø-ÿ0-9 &.'/-]{2,80}?)(?=\s*(?:-|·|Transação|Transacao|\|| {2,}|CRÉDITO|DÉBITO|Pix|CPF|CNPJ|Ag |CC |$))/gi,
+    /(?:enviado\s+(?:para|a)|destino[:\s]|pagamento\s+(?:a|para|de)|para[:\s])\s+([A-Za-zÀ-ÖØ-öø-ÿ0-9][A-Za-zÀ-ÖØ-öø-ÿ0-9 &.'/-]{2,80}?)(?=\s*(?:-|·|Transação|Transacao|\|| {2,}|CRÉDITO|DÉBITO|Pix|CPF|CNPJ|Ag |CC |$))/gi,
+  ];
+
   (state.transactions || []).forEach((t) => {
-    const text = `${t.description || ''} ${t.memo || ''} ${t.name || ''} ${t.trnType || ''}`;
-    // Split em tokens alfanuméricos (mantém #, hifens simples)
-    const tokens = normalizeText(text).split(/[\s,.;:!?()\[\]{}"']+/);
-    tokens.forEach((tok) => {
-      if (!tok || tok.length < 3) return;
-      if (STOPWORDS.has(tok)) return;
-      wordCount.set(tok, (wordCount.get(tok) || 0) + 1);
+    const memo = t.memo || t.description || '';
+    const name = t.name || '';
+    const desc = t.description || '';
+
+    // === 1. BENEFICIÁRIOS via gatilhos ===
+    BENEFICIARY_TRIGGERS.forEach((re) => {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(memo + '\n' + name + '\n' + desc)) !== null) {
+        let benef = m[1].trim();
+        // Limpa sufixos ruidosos residuais
+        benef = benef.replace(/\s+(CPF|CNPJ|Ag|CC|Transação|Transacao|Pix).*$/i, '').trim();
+        if (benef.length < 3 || benef.length > 80) continue;
+        // Normaliza espaços internos
+        benef = benef.replace(/\s+/g, ' ');
+        const norm = normalizeText(benef);
+        const existing = beneficiaryCount.get(norm);
+        if (existing) existing.count++;
+        else beneficiaryCount.set(norm, { canonical: benef, count: 1 });
+      }
+    });
+
+    // === 2 & 3. Tokens (palavras individuais) ===
+    // Preserva original pra sugerir com case, mas indexa por normalizado
+    // pra evitar duplicatas tipo "PIX" e "Pix".
+    const full = `${desc} ${memo} ${name} ${t.trnType || ''}`;
+    const rawTokens = full.split(/[\s,.;:!?()\[\]{}"'#|·\-]+/);
+    rawTokens.forEach((tokRaw) => {
+      const tok = tokRaw.trim();
+      if (!tok) return;
+      // Descarta números puros e strings muito curtas
+      if (tok.length < 4) return;
+      if (/^\d+$/.test(tok)) return;
+      const norm = normalizeText(tok);
+      if (STOPWORDS.has(norm)) return;
+
+      // Prefere case-capitalizado (primeira letra maiúscula) como forma canônica
+      const canonical = tok;
+      if (HIGHLIGHT_TOKENS.has(norm)) {
+        const existing = typeCount.get(norm);
+        if (existing) existing.count++;
+        else typeCount.set(norm, { canonical: capitalizeWord(canonical), count: 1 });
+      } else {
+        const existing = wordCount.get(norm);
+        if (existing) existing.count++;
+        else wordCount.set(norm, { canonical, count: 1 });
+      }
     });
   });
 
-  // Aplica filtro do query
-  let entries = [...wordCount.entries()];
-  if (q) entries = entries.filter(([w]) => w.includes(q));
+  // Consolida com pesos (score determina ordem no dropdown)
+  const results = [];
+  beneficiaryCount.forEach((v) => {
+    results.push({ value: v.canonical, count: v.count, score: v.count * 10 });
+  });
+  typeCount.forEach((v) => {
+    results.push({ value: v.canonical, count: v.count, score: v.count * 5 });
+  });
+  wordCount.forEach((v) => {
+    // Corta long tail: só palavras que aparecem 2+ vezes
+    if (v.count >= 2) {
+      results.push({ value: v.canonical, count: v.count, score: v.count });
+    }
+  });
 
-  entries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  return entries.slice(0, 40).map(([word, count]) => ({
-    value: word,
-    label: word,
-    count,
-  }));
+  return results;
+}
+
+/** Capitaliza primeira letra, mantém resto como está (para nomes conhecidos) */
+function capitalizeWord(w) {
+  if (!w) return w;
+  return w.charAt(0).toUpperCase() + w.slice(1);
 }
 
 /**
  * Retorna sugestões para o filtro "Conta Destino/Origem":
  *   - Usa state.counterpartyList (nomes agregados)
- *   - Filtra pelo query
+ *   - IMPORTANTE: o value mostrado e usado para o match é o displayName
+ *     (nome com case ORIGINAL, ex: "Jean Carlo de Souza"), NÃO a movementKey
+ *     (uppercase, usada só como chave interna de agrupamento).
+ *   - Filtra pelo query (contém, case-insensitive, sem acento) tanto contra
+ *     displayName quanto contra movementKey (pra pegar variações de case)
  *   - Respeita o filtro de tipo atual (se está em crédito, só nomes que
  *     têm crédito; se débito, só quem tem débito)
- *   - Limita a 60 resultados
+ *   - Limita a 80 resultados (usuário pode ter muitas contrapartes)
  */
 function getCounterpartySuggestions(query, pills) {
   const q = normalizeText(query);
   const typeF = filterType.value;
   const list = state.counterpartyList || [];
 
-  const filtered = list.filter(([name, data]) => {
+  const filtered = list.filter(([key, data]) => {
     if (typeF === 'credit' && data.creditCount === 0) return false;
     if (typeF === 'debit'  && data.debitCount === 0)  return false;
-    if (q && !normalizeText(name).includes(q)) return false;
+    if (q) {
+      const hay = normalizeText(`${data.displayName || ''} ${key || ''}`);
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
 
-  return filtered.slice(0, 60).map(([name, data]) => {
+  return filtered.slice(0, 80).map(([key, data]) => {
     const count = typeF === 'credit' ? data.creditCount
                 : typeF === 'debit'  ? data.debitCount
                 : data.count;
-    return { value: name, label: name, count };
+    // Value usado no filtro = displayName (nome bonito). Label idem.
+    const displayName = data.displayName || key;
+    return { value: displayName, label: displayName, count };
   });
 }
 
