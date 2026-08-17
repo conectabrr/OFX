@@ -464,7 +464,7 @@ app.get('/', (c) => {
 
             {/* Filtro estorno + botões */}
             <div class="mt-4 flex flex-wrap items-center gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">
-              <div id="reversal-filter-wrapper" class="hidden">
+              <div id="reversal-filter-wrapper" class="filter-toggle-wrapper is-empty" title="Sem estornos neste extrato">
                 <label class="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-700 dark:text-slate-200">
                   <select
                     id="filter-reversal"
@@ -479,7 +479,7 @@ app.get('/', (c) => {
                   </span>
                 </label>
               </div>
-              <div id="devolucao-filter-wrapper" class="hidden">
+              <div id="devolucao-filter-wrapper" class="filter-toggle-wrapper is-empty" title="Sem devoluções PIX neste extrato">
                 <label class="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-700 dark:text-slate-200">
                   <select
                     id="filter-devolucao"
@@ -494,7 +494,7 @@ app.get('/', (c) => {
                   </span>
                 </label>
               </div>
-              <div id="boleto-filter-wrapper" class="hidden">
+              <div id="boleto-filter-wrapper" class="filter-toggle-wrapper is-empty" title="Sem pagamentos de boletos neste extrato">
                 <label class="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-700 dark:text-slate-200">
                   <select
                     id="filter-boleto"

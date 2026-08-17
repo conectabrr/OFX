@@ -1285,14 +1285,21 @@ function renderDashboard(opts = {}) {
 function updateReversalUI() {
   const wrapper = document.getElementById('reversal-filter-wrapper');
   const countEl = document.getElementById('reversal-count');
+  const selectEl = document.getElementById('filter-reversal');
   const cpToggle = document.getElementById('counterparty-reversal-toggle');
   const cpBadge = document.getElementById('counterparty-reversal-badge');
   const total = state.transactions.filter((t) => t.isReversal).length;
   if (countEl) countEl.textContent = String(total);
   if (cpBadge) cpBadge.textContent = String(total);
+  // Wrapper agora fica SEMPRE visível — sinaliza "sem movimentos" via classe is-empty
   if (wrapper) {
-    if (total > 0) wrapper.classList.remove('hidden');
-    else wrapper.classList.add('hidden');
+    wrapper.classList.remove('hidden');
+    wrapper.classList.toggle('is-empty', total === 0);
+    wrapper.setAttribute('title', total === 0 ? 'Sem estornos neste extrato' : `${total} estorno(s) detectado(s)`);
+  }
+  if (selectEl) {
+    selectEl.disabled = total === 0;
+    if (total === 0) selectEl.value = 'all';
   }
   // Botão exclusivo de estorno no painel de contrapartes
   if (cpToggle) {
@@ -1321,11 +1328,17 @@ function updateReversalUI() {
 function updateBoletoUI() {
   const wrapper = document.getElementById('boleto-filter-wrapper');
   const countEl = document.getElementById('boleto-count');
+  const selectEl = document.getElementById('filter-boleto');
   const total = state.transactions.filter((t) => t.isBoleto).length;
   if (countEl) countEl.textContent = String(total);
   if (wrapper) {
-    if (total > 0) wrapper.classList.remove('hidden');
-    else wrapper.classList.add('hidden');
+    wrapper.classList.remove('hidden');
+    wrapper.classList.toggle('is-empty', total === 0);
+    wrapper.setAttribute('title', total === 0 ? 'Sem pagamentos de boleto neste extrato' : `${total} boleto(s) detectado(s)`);
+  }
+  if (selectEl) {
+    selectEl.disabled = total === 0;
+    if (total === 0) selectEl.value = 'all';
   }
 }
 
@@ -1336,11 +1349,17 @@ function updateBoletoUI() {
 function updateDevolucaoUI() {
   const wrapper = document.getElementById('devolucao-filter-wrapper');
   const countEl = document.getElementById('devolucao-count');
+  const selectEl = document.getElementById('filter-devolucao');
   const total = state.transactions.filter((t) => t.isDevolucao).length;
   if (countEl) countEl.textContent = String(total);
   if (wrapper) {
-    if (total > 0) wrapper.classList.remove('hidden');
-    else wrapper.classList.add('hidden');
+    wrapper.classList.remove('hidden');
+    wrapper.classList.toggle('is-empty', total === 0);
+    wrapper.setAttribute('title', total === 0 ? 'Sem devoluções PIX neste extrato' : `${total} devolução(ões) PIX detectada(s)`);
+  }
+  if (selectEl) {
+    selectEl.disabled = total === 0;
+    if (total === 0) selectEl.value = 'all';
   }
 }
 

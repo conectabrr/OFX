@@ -1304,3 +1304,52 @@ html:not(.dark) {
   border-color: rgba(239, 68, 68, 0.4);
   color: #fecaca;
 }
+
+/* Filtros de estorno/devolução/boleto: sempre visíveis para padronizar dashboard.
+ * Quando não há movimentos daquele tipo, aplicamos .is-empty que:
+ *  - reduz opacidade do wrapper
+ *  - desabilita o <select> (via .disabled nativo aplicado pelo JS)
+ *  - mostra o badge em cinza suave em vez da cor original
+ *  - adiciona um pseudo-elemento "Nenhum" após o badge
+ */
+.filter-toggle-wrapper {
+  transition: opacity 0.2s ease;
+}
+.filter-toggle-wrapper.is-empty {
+  opacity: 0.55;
+}
+.filter-toggle-wrapper.is-empty select {
+  cursor: not-allowed;
+  background-color: #f3f4f6;
+  color: #6b7280;
+}
+.dark .filter-toggle-wrapper.is-empty select {
+  background-color: #334155;
+  color: #94a3b8;
+}
+/* Badge fica cinza quando vazio, sobrepondo a cor original */
+.filter-toggle-wrapper.is-empty > label > span[id$="-count-badge"],
+.filter-toggle-wrapper.is-empty #reversal-count-badge,
+.filter-toggle-wrapper.is-empty #devolucao-count-badge,
+.filter-toggle-wrapper.is-empty #boleto-count-badge {
+  background-color: #e5e7eb !important;
+  color: #6b7280 !important;
+}
+.dark .filter-toggle-wrapper.is-empty > label > span[id$="-count-badge"],
+.dark .filter-toggle-wrapper.is-empty #reversal-count-badge,
+.dark .filter-toggle-wrapper.is-empty #devolucao-count-badge,
+.dark .filter-toggle-wrapper.is-empty #boleto-count-badge {
+  background-color: #334155 !important;
+  color: #94a3b8 !important;
+}
+/* Rótulo "Nenhum" ao lado do badge quando vazio */
+.filter-toggle-wrapper.is-empty > label::after {
+  content: "Nenhum";
+  font-size: 0.75rem;
+  color: #9ca3af;
+  font-style: italic;
+  margin-left: 0.25rem;
+}
+.dark .filter-toggle-wrapper.is-empty > label::after {
+  color: #64748b;
+}
